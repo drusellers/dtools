@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# dnet toggle — manually flip IPv6 on/off for configured macOS network services.
+#
+# Usage:
+#   dnet toggle            flip: if IPv6 is on anywhere -> turn all OFF, else ON
+#   dnet off               force IPv6 OFF on all configured services
+#   dnet on                restore IPv6 to Automatic on all configured services
+#   dnet status            show current IPv6 setting per service (no sudo needed)
+#
+# Changing settings needs root; the script re-runs itself with sudo as needed.
+#
+# Configure managed services per run:
+#   DNET_SERVICES="Wi-Fi:Thunderbolt Bridge" dnet off
+#
+# Or persist them for the guard and toggle commands:
+#   echo 'Wi-Fi:Thunderbolt Bridge' | sudo tee /usr/local/etc/dtools/dnet/services
+
+set -u
+
+DEFAULT_SERVICES=("Wi-Fi" "Belkin USB-C LAN")
+LABEL="${DNET_LABEL:-com.drusellers.dtools.dnet.vpn-ipv6-guard}"
+PLIST="${DNET_PLIST:-/Library/LaunchDaemons/$LABEL.plist}"
+GUARD="${DNET_GUARD_INSTALL_PATH:-/usr/local/libexec/dtools/dnet/vpn-ipv6-guard}"
+SERVICE_FILE="${DNET_SERVICE_FILE:-/usr/local/etc/dtools/dnet/services}"
+
+usage() { sed -n '2,/^$/{/^#/s/^# \{0,1\}//p;}' "$0"; }
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "dnet: this command currently supports macOS only" >&2
+  exit 1
+fi
+
+SERVICES_ARR=()
+
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+add_services_colon() {
+  local raw="$1" part
+  local parts=()
+  IFS=':' read -r -a parts <<< "$raw"
+  for part in "${parts[@]}"; do
+    part="$(trim "$part")"
+    [ -n "$part" ] && SERVICES_ARR+=("$part")
+  done
+}
+
+load_services() {
+  local line
+  if [ -n "${DNET_SERVICES:-}" ]; then
+    add_services_colon "$DNET_SERVICES"
+  elif [ -f "$SERVICE_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="$(trim "$line")"
+      case "$line" in
+        ''|'#'*) continue ;;
+        *:*) add_services_colon "$line" ;;
+        *) SERVICES_ARR+=("$line") ;;
+      esac
+    done < "$SERVICE_FILE"
+  fi
+
+  if [ "${#SERVICES_ARR[@]}" -eq 0 ]; then
+    SERVICES_ARR=("${DEFAULT_SERVICES[@]}")
+  fi
+}
+
+have_service() {
+  networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | sed 's/^\* //' \
+    | grep -qxF "$1"
+}
+
+v6_state() {
+  networksetup -getinfo "$1" 2>/dev/null | awk -F': ' '/^IPv6:/{print $2; exit}'
+}
+
+flush_dns() {
+  dscacheutil -flushcache
+  killall -HUP mDNSResponder 2>/dev/null || true
+}
+
+sudo_env() {
+  [ -n "${DNET_SERVICES:-}" ] && printf '%s\0' "DNET_SERVICES=$DNET_SERVICES"
+  [ -n "${DNET_SERVICE_FILE:-}" ] && printf '%s\0' "DNET_SERVICE_FILE=$DNET_SERVICE_FILE"
+  [ -n "${DNET_LABEL:-}" ] && printf '%s\0' "DNET_LABEL=$DNET_LABEL"
+  [ -n "${DNET_PLIST:-}" ] && printf '%s\0' "DNET_PLIST=$DNET_PLIST"
+  [ -n "${DNET_GUARD_INSTALL_PATH:-}" ] && printf '%s\0' "DNET_GUARD_INSTALL_PATH=$DNET_GUARD_INSTALL_PATH"
+}
+
+need_root() {
+  local env_args=() item
+  if [ "$(id -u)" -ne 0 ]; then
+    while IFS= read -r -d '' item; do
+      env_args+=("$item")
+    done < <(sudo_env)
+    exec sudo env "${env_args[@]}" "$0" "$@"
+  fi
+}
+
+print_status() {
+  local svc state
+  for svc in "${SERVICES_ARR[@]}"; do
+    if have_service "$svc"; then
+      state="$(v6_state "$svc")"
+      printf '  %-26s IPv6: %s\n' "$svc" "${state:-<unknown>}"
+    else
+      printf '  %-26s (service not found — skipping)\n' "$svc"
+    fi
+  done
+}
+
+daemon_status() {
+  local files loaded
+  if [ -f "$PLIST" ] && [ -f "$GUARD" ]; then files="yes"
+  elif [ -f "$PLIST" ] || [ -f "$GUARD" ]; then files="partial"
+  else files="no"; fi
+
+  if [ "$files" = "no" ]; then
+    loaded="no"
+  elif launchctl print "system/$LABEL" >/dev/null 2>&1; then
+    loaded="yes"
+  elif [ "$(id -u)" -eq 0 ]; then
+    loaded="no"
+  else
+    loaded="unknown (needs sudo)"
+  fi
+
+  printf '  %-26s installed: %s   loaded: %s\n' "auto-guard daemon" "$files" "$loaded"
+  case "$files" in
+    no)      printf '  %-26s not set up — run dnet install-guard for automatic toggling\n' "" ;;
+    partial) printf '  %-26s partial install — re-run dnet install-guard\n' "" ;;
+  esac
+}
+
+any_on() {
+  local svc
+  for svc in "${SERVICES_ARR[@]}"; do
+    have_service "$svc" || continue
+    [ "$(v6_state "$svc")" != "Off" ] && return 0
+  done
+  return 1
+}
+
+apply() {
+  local target="$1" changed=0 cur svc
+  for svc in "${SERVICES_ARR[@]}"; do
+    if ! have_service "$svc"; then
+      printf '  %-26s not found — skipped\n' "$svc"
+      continue
+    fi
+    cur="$(v6_state "$svc")"
+    if [ "$target" = off ]; then
+      if [ "$cur" != "Off" ]; then
+        networksetup -setv6off "$svc"
+        printf '  %-26s IPv6 %s -> Off\n' "$svc" "${cur:-<unknown>}"; changed=1
+      else
+        printf '  %-26s already Off\n' "$svc"
+      fi
+    else
+      if [ "$cur" = "Off" ]; then
+        networksetup -setv6automatic "$svc"
+        printf '  %-26s IPv6 Off -> Automatic\n' "$svc"; changed=1
+      else
+        printf '  %-26s already %s\n' "$svc" "${cur:-<unknown>}"
+      fi
+    fi
+  done
+  if [ "$changed" = 1 ]; then
+    flush_dns
+    echo "  DNS cache flushed."
+  fi
+}
+
+load_services
+
+CMD="${1:-toggle}"
+case "$CMD" in
+  -h|--help) usage; exit 0 ;;
+  status)    echo "IPv6 status:"; print_status; echo; daemon_status; exit 0 ;;
+  on|off|toggle) need_root "$@" ;;
+  *) echo "unknown command: $CMD" >&2; usage; exit 2 ;;
+esac
+
+case "$CMD" in
+  off)    echo "Disabling IPv6:"; apply off ;;
+  on)     echo "Restoring IPv6:"; apply on ;;
+  toggle)
+    if any_on; then
+      echo "IPv6 is enabled on a configured service -> turning ALL OFF:"; apply off
+    else
+      echo "IPv6 is off everywhere -> restoring ALL to Automatic:"; apply on
+    fi ;;
+esac
+
+echo
+echo "Now:"
+print_status
+echo
+daemon_status

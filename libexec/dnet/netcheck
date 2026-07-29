@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+# dnet netcheck — VPN / IPv6 network diagnostics for macOS.
+#
+# READ-ONLY: this script only reads network state. It never changes settings.
+# Safe to run with the VPN connected or disconnected. Run it in both states and
+# share both reports with your network engineer.
+#
+# Usage:
+#   dnet netcheck [target-host] [--save]
+#
+#   dnet netcheck                 # diagnose against claude.com
+#   dnet netcheck github.com      # diagnose against a different host
+#   dnet netcheck --save          # also write netcheck-<timestamp>.txt
+#
+# Tip: some sections are richer with sudo, but the important parts work without it.
+
+set -u
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "dnet netcheck currently supports macOS only" >&2
+  exit 1
+fi
+
+LABEL="${DNET_LABEL:-com.drusellers.dtools.dnet.vpn-ipv6-guard}"
+PLIST="${DNET_PLIST:-/Library/LaunchDaemons/$LABEL.plist}"
+GUARD="${DNET_GUARD_INSTALL_PATH:-/usr/local/libexec/dtools/dnet/vpn-ipv6-guard}"
+
+TARGET="claude.com"
+SAVE=0
+for arg in "$@"; do
+  case "$arg" in
+    --save)     SAVE=1 ;;
+    -h|--help)  sed -n '2,/^$/{/^#/s/^# \{0,1\}//p;}' "$0"; exit 0 ;;
+    -*)         printf 'Unknown option: %s\n' "$arg" >&2; exit 2 ;;
+    *)          TARGET="$arg" ;;
+  esac
+done
+
+if [ "$SAVE" = "1" ]; then
+  OUT="netcheck-$(date +%Y%m%d-%H%M%S).txt"
+  exec > >(tee "$OUT") 2>&1
+  trap 'printf "\nReport saved to: %s\n" "$OUT"' EXIT
+fi
+
+line()    { printf '%s\n' '============================================================'; }
+section() { printf '\n'; line; printf '  %s\n' "$1"; line; }
+kv()      { printf '  %-24s %s\n' "$1" "${2:-}"; }
+have()    { command -v "$1" >/dev/null 2>&1; }
+
+service_for_device() {
+  local dev="$1"
+  [ -n "$dev" ] || return
+  networksetup -listnetworkserviceorder 2>/dev/null | awk -v d="$dev" '
+    /^\([0-9* ]+\)/ { svc=$0; sub(/^\([^)]*\) /,"",svc); next }
+    $0 ~ ("Device: " d "\\)") { print svc; exit }'
+}
+
+probe() {
+  curl "$1" -sS -o /dev/null --max-time 8 \
+       -w 'code=%{http_code} time=%{time_total}s ip=%{remote_ip}' \
+       "$2" 2>&1
+}
+ok_code() { case "$1" in 2*|3*) return 0 ;; *) return 1 ;; esac; }
+
+NOW=$(date '+%Y-%m-%d %H:%M:%S %Z')
+DEF_IF=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')
+DEF_GW=$(route -n get default 2>/dev/null | awk '/gateway:/{print $2}')
+DEF_IF6=$(route -n get -inet6 default 2>/dev/null | awk '/interface:/{print $2}')
+PRIMARY_SVC=$(service_for_device "$DEF_IF")
+
+VPN_CLI="${DNET_VPN_CLI:-/opt/cisco/secureclient/bin/vpn}"
+[ -x "$VPN_CLI" ] || VPN_CLI="/opt/cisco/anyconnect/bin/vpn"
+VPN_STATE="unknown"
+if [ -x "$VPN_CLI" ]; then
+  if "$VPN_CLI" state 2>/dev/null | grep -q "state: Connected"; then
+    VPN_STATE="CONNECTED"
+  else
+    VPN_STATE="disconnected"
+  fi
+elif printf '%s' "$DEF_IF" | grep -q '^utun'; then
+  VPN_STATE="CONNECTED (inferred: default route on $DEF_IF)"
+else
+  VPN_STATE="disconnected (inferred: no tunnel default route)"
+fi
+
+IPV6_SET=$(networksetup -getinfo "${PRIMARY_SVC:-Wi-Fi}" 2>/dev/null | awk -F': ' '/^IPv6:/{print $2}')
+
+GLOBAL_V6=$(ifconfig 2>/dev/null | awk '
+  /^[a-z]/ { ifc=$1 }
+  /inet6/ && $2 !~ /^fe80/ && $2 != "::1" { print ifc" "$2 }')
+
+V4_RES=$(probe -4 "https://$TARGET")
+V6_RES=$(probe -6 "https://$TARGET")
+V4_CODE=$(printf '%s' "$V4_RES" | sed -n 's/.*code=\([0-9]*\).*/\1/p')
+V6_CODE=$(printf '%s' "$V6_RES" | sed -n 's/.*code=\([0-9]*\).*/\1/p')
+
+section "SUMMARY  (target: $TARGET)"
+kv "Timestamp"        "$NOW"
+kv "VPN state"        "$VPN_STATE"
+kv "Primary service"  "${PRIMARY_SVC:-<unknown>}  (device ${DEF_IF:-none}, gw ${DEF_GW:-none})"
+kv "IPv6 setting"     "${IPV6_SET:-<unknown>}   <-- 'Off' means disabled on this service"
+kv "Global IPv6 addr" "$([ -n "$GLOBAL_V6" ] && echo yes || echo none)"
+printf '\n'
+kv "IPv4 -> $TARGET"  "$V4_RES"
+kv "IPv6 -> $TARGET"  "$V6_RES"
+printf '\n'
+if ok_code "$V4_CODE" && ! ok_code "$V6_CODE" && [ -n "$GLOBAL_V6" ]; then
+  kv "VERDICT" "[!!] IPv6 is being BLACKHOLED: IPv4 works, IPv6 hangs/fails while a"
+  kv ""        "     global IPv6 address is present. Classic 'VPN blocks IPv6 but"
+  kv ""        "     DNS still returns AAAA' problem. See README root-cause section."
+elif ok_code "$V4_CODE" && ok_code "$V6_CODE"; then
+  kv "VERDICT" "[ok] Both IPv4 and IPv6 reach $TARGET."
+elif ! ok_code "$V4_CODE" && ! ok_code "$V6_CODE"; then
+  kv "VERDICT" "[--] Neither IPv4 nor IPv6 reached $TARGET — broader connectivity issue."
+elif [ -z "$GLOBAL_V6" ]; then
+  kv "VERDICT" "[ok] IPv6 appears disabled/absent; IPv4 path in use (no blackhole risk)."
+else
+  kv "VERDICT" "[??] Mixed result — see detail sections below."
+fi
+
+section "SYSTEM"
+kv "macOS"    "$(sw_vers -productVersion 2>/dev/null) ($(sw_vers -buildVersion 2>/dev/null))"
+kv "Hardware" "$(sysctl -n hw.model 2>/dev/null)"
+kv "Hostname" "$(scutil --get LocalHostName 2>/dev/null || hostname)"
+kv "Uptime"   "$(uptime | sed 's/^ *//')"
+if [ -n "$DEF_IF" ]; then
+  SSID=$(networksetup -getairportnetwork "$DEF_IF" 2>/dev/null)
+  case "$SSID" in *'Current Wi-Fi Network:'*) kv "Wi-Fi SSID" "${SSID##*: }" ;; esac
+fi
+
+section "VPN DETAIL"
+if [ -x "$VPN_CLI" ]; then
+  kv "Cisco CLI" "$VPN_CLI"
+  "$VPN_CLI" state 2>/dev/null | sed 's/^/  /'
+else
+  kv "Cisco CLI" "not found (checked /opt/cisco/{secureclient,anyconnect}/bin/vpn)"
+fi
+printf '\n  Tunnel interfaces (utun*):\n'
+ifconfig 2>/dev/null | awk '
+  /^utun/ { ifc=$1; hdr=0 }
+  ifc && /inet / { if(!hdr){print "  "ifc":"; hdr=1} print "    "$0 }
+  ifc && /inet6 / && $2 !~ /^fe80/ { if(!hdr){print "  "ifc":"; hdr=1} print "    "$0 }' \
+  || true
+ifconfig 2>/dev/null | grep -q '^utun.*inet ' || kv "" "(no utun interface carrying an IPv4 address)"
+
+section "IPv6 STATUS  (per network service)"
+networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | while IFS= read -r svc; do
+  svc="${svc#\* }"
+  v6=$(networksetup -getinfo "$svc" 2>/dev/null | awk -F': ' '/^IPv6:/{print $2}')
+  [ -n "$v6" ] && kv "$svc" "IPv6: $v6"
+done
+printf '\n'
+kv "use_tempaddr (sysctl)" "$(sysctl -n net.inet6.ip6.use_tempaddr 2>/dev/null)"
+printf '\n  Global IPv6 addresses on interfaces:\n'
+if [ -n "$GLOBAL_V6" ]; then
+  printf '%s\n' "$GLOBAL_V6" | sed 's/^/    /'
+else
+  printf '    (none — only link-local fe80:: present)\n'
+fi
+printf '\n  scutil --nwi (network reachability):\n'
+scutil --nwi 2>/dev/null | sed 's/^/    /' || true
+
+section "ROUTING"
+printf '  IPv4 default route:\n'
+route -n get default 2>/dev/null | sed 's/^/    /' || printf '    (none)\n'
+printf '\n  IPv6 default route:\n'
+route -n get -inet6 default 2>/dev/null | sed 's/^/    /' || printf '    (none)\n'
+
+section "DNS CONFIGURATION"
+scutil --dns 2>/dev/null | awk '
+  /^resolver #/ { print "  "$0; next }
+  /nameserver\[|search domain\[|domain :|if_index|flags|reach/ { print "    "$0 }' \
+  | head -60
+DNS_SERVERS=$(scutil --dns 2>/dev/null | awk '/nameserver\[/{print $3}' | sort -u | tr '\n' ' ')
+printf '\n'
+kv "Resolvers in use" "${DNS_SERVERS:-<none>}"
+if printf '%s' "$DNS_SERVERS" | grep -Eq '127\.0\.0\.1|208\.67\.(222|220)\.(222|220)'; then
+  kv "NOTE" "Umbrella/OpenDNS-style resolver detected (127.0.0.1 or 208.67.x). If the"
+  kv ""     "Secure Client Umbrella module is deployed it may hijack port 53 — mention this."
+fi
+PROXY=$(scutil --proxy 2>/dev/null | grep -iE 'Enable.*: 1|ProxyAutoConfig|HTTPProxy|HTTPSProxy' )
+[ -n "$PROXY" ] && { printf '\n  Active proxy settings:\n'; printf '%s\n' "$PROXY" | sed 's/^/    /'; }
+
+section "DNS RESOLUTION  ($TARGET)"
+printf '  System resolver (dscacheutil):\n'
+dscacheutil -q host -a name "$TARGET" 2>/dev/null | grep -E 'ip_address|ipv6_address' | sed 's/^/    /' \
+  || printf '    (no records)\n'
+if have dig; then
+  printf '\n  A records (dig):    %s\n' "$(dig +short A    "$TARGET" 2>/dev/null | tr '\n' ' ')"
+  printf   '  AAAA records (dig): %s\n' "$(dig +short AAAA "$TARGET" 2>/dev/null | tr '\n' ' ')"
+  printf '\n  If AAAA records exist but IPv6 reachability fails above, DNS is handing out\n'
+  printf   '  IPv6 addresses the VPN cannot deliver — that is the blackhole.\n'
+fi
+
+section "LATENCY / PACKET LOSS"
+for host in "${DEF_GW:-}" 1.1.1.1 8.8.8.8; do
+  [ -n "$host" ] || continue
+  res=$(ping -c 3 -t 5 "$host" 2>/dev/null | tail -2)
+  printf '  %-16s\n' "$host ->"
+  printf '%s\n' "${res:-    (no reply)}" | sed 's/^/    /'
+done
+if [ -n "$DEF_IF6" ]; then
+  if ping -6 -c1 -t1 ::1 >/dev/null 2>&1; then PING6="ping -6"; elif have ping6; then PING6="ping6"; else PING6=""; fi
+  if [ -n "$PING6" ]; then
+    printf '  %-16s\n' "2606:4700:4700::1111 (v6) ->"
+    $PING6 -c 3 2606:4700:4700::1111 2>/dev/null | tail -2 | sed 's/^/    /' || printf '    (no reply)\n'
+  fi
+fi
+
+section "MTU / PATH-MTU DISCOVERY"
+if [ -n "$DEF_IF" ]; then
+  kv "Link MTU ($DEF_IF)" "$(ifconfig "$DEF_IF" 2>/dev/null | awk '/mtu/{print $NF}')"
+fi
+[ -n "$DEF_IF6" ] && kv "Tunnel iface (v6 dflt)" "$DEF_IF6"
+printf '\n  Don'\''t-Fragment probe to 1.1.1.1 (largest passing = usable path MTU):\n'
+best=0
+for size in 1472 1452 1414 1372 1300 1200; do
+  if ping -D -s "$size" -c 2 -t 5 1.1.1.1 2>&1 | grep -qE '[1-9][0-9]* (packets |bytes from)'; then
+    printf '    payload %-4s (MTU %-4s)  PASS\n' "$size" "$((size+28))"
+    best=$((size+28)); break
+  else
+    printf '    payload %-4s (MTU %-4s)  fail\n' "$size" "$((size+28))"
+  fi
+done
+[ "$best" -gt 0 ] && kv "Effective path MTU" "~${best} bytes"
+printf '  (If large sizes fail but small pass, Path-MTU Discovery is broken — a\n'
+printf '   secondary VPN suspect. Ask IT to verify MSS clamping on the tunnel.)\n'
+
+section "PUBLIC IP  (as seen from the internet)"
+kv "IPv4" "$(curl -4 -sS --max-time 6 https://api.ipify.org 2>&1)"
+V6PUB=$(curl -6 -sS --max-time 6 https://api6.ipify.org 2>&1)
+kv "IPv6" "$V6PUB"
+printf '%s' "$V6PUB" | grep -qiE 'timed out|couldn|refused|resolve' && \
+  kv "" "(IPv6 fetch failed — consistent with IPv6 being blocked by the VPN)"
+
+section "dnet vpn-ipv6-guard DAEMON"
+if launchctl print "system/$LABEL" >/dev/null 2>&1; then
+  kv "Loaded" "yes"
+  launchctl print "system/$LABEL" 2>/dev/null \
+    | awk '/state =|program =|last exit/{$1=$1; print "    "$0}'
+else
+  kv "Loaded" "no (workaround daemon not installed — see dnet install-guard)"
+fi
+kv "Plist" "$([ -f "$PLIST" ] && printf '%s' "$PLIST" || printf 'missing: %s' "$PLIST")"
+kv "Helper" "$([ -f "$GUARD" ] && printf '%s' "$GUARD" || printf 'missing: %s' "$GUARD")"
+printf '\n  Recent daemon log lines:\n'
+GUARD_LOG=$(log show --last 1h --predicate 'eventMessage CONTAINS "vpn-ipv6-guard" OR eventMessage CONTAINS "dnet"' 2>/dev/null \
+  | grep -Ev 'noninteractively|com\.apple\.log|^Timestamp ' | tail -8)
+if [ -n "$GUARD_LOG" ]; then printf '%s\n' "$GUARD_LOG" | sed 's/^/    /'; else printf '    (none)\n'; fi
+
+section "END OF REPORT"
+printf '  Run this with the VPN CONNECTED and again DISCONNECTED, then share both.\n\n'

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Remove the dnet launchd guard daemon.
+
+set -euo pipefail
+
+LABEL="${DNET_LABEL:-com.drusellers.dtools.dnet.vpn-ipv6-guard}"
+CONFIG_DIR="${DNET_CONFIG_DIR:-/usr/local/etc/dtools/dnet}"
+SERVICE_FILE="${DNET_SERVICE_FILE:-$CONFIG_DIR/services}"
+GUARD_INSTALL_DIR="${DNET_GUARD_INSTALL_DIR:-/usr/local/libexec/dtools/dnet}"
+GUARD_INSTALL_PATH="${DNET_GUARD_INSTALL_PATH:-$GUARD_INSTALL_DIR/vpn-ipv6-guard}"
+PLIST="${DNET_PLIST:-/Library/LaunchDaemons/$LABEL.plist}"
+PURGE_CONFIG=0
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  dnet uninstall-guard [--purge-config]
+
+Stops and removes the dnet VPN IPv6 guard LaunchDaemon.
+
+Options:
+  --purge-config   Also remove the persisted managed-service list.
+  -h, --help       Show this help.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --purge-config) PURGE_CONFIG=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "dnet uninstall-guard currently supports macOS only" >&2
+  exit 1
+fi
+
+sudo_env() {
+  [ -n "${DNET_SERVICE_FILE:-}" ] && printf '%s\0' "DNET_SERVICE_FILE=$DNET_SERVICE_FILE"
+  [ -n "${DNET_CONFIG_DIR:-}" ] && printf '%s\0' "DNET_CONFIG_DIR=$DNET_CONFIG_DIR"
+  [ -n "${DNET_GUARD_INSTALL_DIR:-}" ] && printf '%s\0' "DNET_GUARD_INSTALL_DIR=$DNET_GUARD_INSTALL_DIR"
+  [ -n "${DNET_GUARD_INSTALL_PATH:-}" ] && printf '%s\0' "DNET_GUARD_INSTALL_PATH=$DNET_GUARD_INSTALL_PATH"
+  [ -n "${DNET_PLIST:-}" ] && printf '%s\0' "DNET_PLIST=$DNET_PLIST"
+  [ -n "${DNET_LABEL:-}" ] && printf '%s\0' "DNET_LABEL=$DNET_LABEL"
+}
+
+if [ "$(id -u)" -ne 0 ]; then
+  env_args=()
+  sudo_args=()
+  while IFS= read -r -d '' item; do
+    env_args+=("$item")
+  done < <(sudo_env)
+  [ "$PURGE_CONFIG" = 1 ] && sudo_args+=(--purge-config)
+  exec sudo env "${env_args[@]}" "$0" "${sudo_args[@]}"
+fi
+
+echo "Removing dnet VPN IPv6 guard..."
+launchctl bootout "system/$LABEL" 2>/dev/null || true
+rm -f "$PLIST" "$GUARD_INSTALL_PATH"
+rmdir "$GUARD_INSTALL_DIR" 2>/dev/null || true
+
+if [ "$PURGE_CONFIG" = 1 ]; then
+  rm -f "$SERVICE_FILE"
+  rmdir "$(dirname "$SERVICE_FILE")" 2>/dev/null || true
+fi
+
+echo "Done."

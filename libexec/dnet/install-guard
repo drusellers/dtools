@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# Install or refresh the dnet launchd guard daemon.
+
+set -euo pipefail
+
+LABEL="${DNET_LABEL:-com.drusellers.dtools.dnet.vpn-ipv6-guard}"
+CONFIG_DIR="${DNET_CONFIG_DIR:-/usr/local/etc/dtools/dnet}"
+SERVICE_FILE="${DNET_SERVICE_FILE:-$CONFIG_DIR/services}"
+GUARD_INSTALL_DIR="${DNET_GUARD_INSTALL_DIR:-/usr/local/libexec/dtools/dnet}"
+GUARD_INSTALL_PATH="${DNET_GUARD_INSTALL_PATH:-$GUARD_INSTALL_DIR/vpn-ipv6-guard}"
+PLIST="${DNET_PLIST:-/Library/LaunchDaemons/$LABEL.plist}"
+DEFAULT_SERVICES="Wi-Fi:Belkin USB-C LAN"
+SERVICES_ARG=""
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  dnet install-guard [--services "Wi-Fi:Belkin USB-C LAN"]
+
+Installs the root launchd daemon that runs dnet's VPN IPv6 guard on network
+changes and every 15 seconds.
+
+Options:
+  --services LIST   Persist a colon-separated service list for the guard.
+  -h, --help        Show this help.
+
+Environment overrides:
+  DNET_SERVICES, DNET_SERVICE_FILE, DNET_GUARD_INSTALL_DIR, DNET_PLIST, DNET_LABEL
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --services)
+      [ "$#" -ge 2 ] || { echo "--services requires a value" >&2; exit 2; }
+      SERVICES_ARG="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "dnet install-guard currently supports macOS only" >&2
+  exit 1
+fi
+
+resolve_self_dir() {
+  local source dir
+  source="${BASH_SOURCE[0]}"
+  while [ -h "$source" ]; do
+    dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
+    source="$(readlink "$source")"
+    [[ "$source" != /* ]] && source="$dir/$source"
+  done
+  cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd
+}
+
+xml_escape() {
+  printf '%s' "$1" \
+    | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"
+}
+
+sudo_env() {
+  [ -n "${DNET_SERVICES:-}" ] && printf '%s\0' "DNET_SERVICES=$DNET_SERVICES"
+  [ -n "${DNET_SERVICE_FILE:-}" ] && printf '%s\0' "DNET_SERVICE_FILE=$DNET_SERVICE_FILE"
+  [ -n "${DNET_CONFIG_DIR:-}" ] && printf '%s\0' "DNET_CONFIG_DIR=$DNET_CONFIG_DIR"
+  [ -n "${DNET_GUARD_INSTALL_DIR:-}" ] && printf '%s\0' "DNET_GUARD_INSTALL_DIR=$DNET_GUARD_INSTALL_DIR"
+  [ -n "${DNET_GUARD_INSTALL_PATH:-}" ] && printf '%s\0' "DNET_GUARD_INSTALL_PATH=$DNET_GUARD_INSTALL_PATH"
+  [ -n "${DNET_PLIST:-}" ] && printf '%s\0' "DNET_PLIST=$DNET_PLIST"
+  [ -n "${DNET_LABEL:-}" ] && printf '%s\0' "DNET_LABEL=$DNET_LABEL"
+}
+
+if [ "$(id -u)" -ne 0 ]; then
+  env_args=()
+  sudo_args=()
+  while IFS= read -r -d '' item; do
+    env_args+=("$item")
+  done < <(sudo_env)
+  [ -n "$SERVICES_ARG" ] && sudo_args+=(--services "$SERVICES_ARG")
+  exec sudo env "${env_args[@]}" "$0" "${sudo_args[@]}"
+fi
+
+SELF_DIR="$(resolve_self_dir)"
+SOURCE_GUARD="$SELF_DIR/vpn-ipv6-guard"
+if [ ! -f "$SOURCE_GUARD" ]; then
+  echo "dnet install-guard: missing helper: $SOURCE_GUARD" >&2
+  exit 1
+fi
+
+SERVICES_TO_WRITE="${SERVICES_ARG:-${DNET_SERVICES:-}}"
+if [ -z "$SERVICES_TO_WRITE" ] && [ ! -f "$SERVICE_FILE" ]; then
+  SERVICES_TO_WRITE="$DEFAULT_SERVICES"
+fi
+
+echo "Installing dnet VPN IPv6 guard..."
+install -d -m 0755 "$GUARD_INSTALL_DIR"
+install -m 0755 "$SOURCE_GUARD" "$GUARD_INSTALL_PATH"
+
+install -d -m 0755 "$(dirname "$SERVICE_FILE")"
+if [ -n "$SERVICES_TO_WRITE" ]; then
+  printf '%s\n' "$SERVICES_TO_WRITE" > "$SERVICE_FILE"
+  chmod 0644 "$SERVICE_FILE"
+fi
+
+TMP_PLIST="$(mktemp -t dnet-vpn-ipv6-guard.XXXXXX)"
+cat > "$TMP_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$(xml_escape "$LABEL")</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$(xml_escape "$GUARD_INSTALL_PATH")</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>DNET_SERVICE_FILE</key>
+        <string>$(xml_escape "$SERVICE_FILE")</string>
+    </dict>
+    <key>StartInterval</key>
+    <integer>15</integer>
+    <key>WatchPaths</key>
+    <array>
+        <string>/Library/Preferences/SystemConfiguration</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+install -m 0644 -o root -g wheel "$TMP_PLIST" "$PLIST"
+rm -f "$TMP_PLIST"
+
+launchctl bootout "system/$LABEL" 2>/dev/null || true
+launchctl bootstrap system "$PLIST"
+
+echo "Done."
+echo "  label:        $LABEL"
+echo "  helper:       $GUARD_INSTALL_PATH"
+echo "  plist:        $PLIST"
+echo "  services:     $(tr '\n' ':' < "$SERVICE_FILE" | sed 's/:$//')"
+echo
+echo "Useful commands:"
+echo "  dnet status"
+echo "  dnet guard dry-run"
+echo "  log show --last 30m --predicate 'eventMessage CONTAINS \"vpn-ipv6-guard\"'"

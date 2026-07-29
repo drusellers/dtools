@@ -1,0 +1,68 @@
+name: release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  github-release:
+    name: GitHub release
+    runs-on: ubuntu-latest
+    if: github.repository == 'drusellers/dtools'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute release metadata
+        id: meta
+        shell: bash
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          tag="v$(date -u +'%Y.%m.%d.%H%M%S')-${short_sha}"
+          archive="dtools-${tag}"
+          {
+            echo "tag=${tag}"
+            echo "archive=${archive}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Package archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${{ steps.meta.outputs.archive }}"
+          mkdir -p "dist/${archive}"
+          rsync -a \
+            --exclude='.git' \
+            --exclude='dist' \
+            ./ "dist/${archive}/"
+          tar -C dist -czf "dist/${archive}.tar.gz" "${archive}"
+          (cd dist && sha256sum "${archive}.tar.gz" > "${archive}.tar.gz.sha256")
+
+      - name: Build release notes
+        shell: bash
+        run: |
+          {
+            echo "Automated release for commit \`${GITHUB_SHA}\`."
+            echo
+            echo "## Commit"
+            git log -1 --pretty=format:'%s%n%n%b'
+          } > release-notes.md
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            "dist/${{ steps.meta.outputs.archive }}.tar.gz" \
+            "dist/${{ steps.meta.outputs.archive }}.tar.gz.sha256" \
+            --target "${GITHUB_SHA}" \
+            --title "dtools ${{ steps.meta.outputs.tag }}" \
+            --notes-file release-notes.md

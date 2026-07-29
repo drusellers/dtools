@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_self_dir() {
+  local source dir
+  source="${BASH_SOURCE[0]}"
+  while [ -h "$source" ]; do
+    dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
+    source="$(readlink "$source")"
+    [[ "$source" != /* ]] && source="$dir/$source"
+  done
+  cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd
+}
+
+BIN_DIR="$(resolve_self_dir)"
+PREFIX="$(cd "$BIN_DIR/.." >/dev/null 2>&1 && pwd -P)"
+DNET_LIBEXEC="${DNET_LIBEXEC:-$PREFIX/libexec/dnet}"
+
+usage() {
+  cat <<'USAGE'
+dnet — macOS network helpers
+
+Usage:
+  dnet netcheck [host] [--save]       read-only VPN/IPv6 diagnostics report
+  dnet status                         show IPv6 and guard daemon status
+  dnet off                            disable IPv6 on managed services
+  dnet on                             restore IPv6 to Automatic
+  dnet toggle                         flip IPv6 state on managed services
+  dnet guard dry-run                  preview automatic guard behavior
+  dnet install-guard                  install/refresh the launchd VPN IPv6 guard
+  dnet uninstall-guard                remove the launchd VPN IPv6 guard
+
+Environment:
+  DNET_SERVICES="Wi-Fi:Thunderbolt Bridge"
+      Override the managed macOS network services for one run.
+
+Persistent service override:
+  echo 'Wi-Fi:Thunderbolt Bridge' | sudo tee /usr/local/etc/dtools/dnet/services
+USAGE
+}
+
+run_libexec() {
+  local tool="$1"
+  shift
+  if [ ! -x "$DNET_LIBEXEC/$tool" ]; then
+    printf 'dnet: missing libexec helper: %s\n' "$DNET_LIBEXEC/$tool" >&2
+    exit 1
+  fi
+  exec "$DNET_LIBEXEC/$tool" "$@"
+}
+
+cmd="${1:-help}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+
+case "$cmd" in
+  -h|--help|help)
+    usage
+    ;;
+  netcheck|check|report)
+    run_libexec netcheck "$@"
+    ;;
+  status)
+    run_libexec toggle status "$@"
+    ;;
+  on|off|toggle)
+    run_libexec toggle "$cmd" "$@"
+    ;;
+  guard)
+    run_libexec vpn-ipv6-guard "$@"
+    ;;
+  install|install-guard)
+    run_libexec install-guard "$@"
+    ;;
+  uninstall|uninstall-guard)
+    run_libexec uninstall-guard "$@"
+    ;;
+  version|--version)
+    printf 'dnet (dtools)\n'
+    ;;
+  *)
+    printf 'dnet: unknown command: %s\n\n' "$cmd" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

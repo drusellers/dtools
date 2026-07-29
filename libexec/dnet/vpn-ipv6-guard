@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# dnet vpn-ipv6-guard — disable IPv6 while Cisco Secure Client is connected.
+#
+# Why: Cisco Secure Client deployments often tunnel IPv4 only and block IPv6
+# while connected, but DNS can still return AAAA records. macOS prefers IPv6,
+# so browsers try dead IPv6 paths first and hang.
+#
+# Invariant enforced on every run:
+#   VPN connected     -> IPv6 Off        on every configured service
+#   VPN disconnected  -> IPv6 Automatic  on every configured service
+#
+# Preview what it would do, without changing anything or needing sudo:
+#   dnet guard dry-run
+
+set -u
+
+DEFAULT_SERVICES=("Wi-Fi" "Belkin USB-C LAN")
+SERVICE_FILE="${DNET_SERVICE_FILE:-/usr/local/etc/dtools/dnet/services}"
+DRY=0
+
+usage() {
+  sed -n '2,/^$/{/^#/s/^# \{0,1\}//p;}' "$0"
+}
+
+case "${1:-}" in
+  dry-run|--dry-run) DRY=1 ;;
+  -h|--help) usage; exit 0 ;;
+  '') ;;
+  *) echo "unknown command: $1" >&2; usage >&2; exit 2 ;;
+esac
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "dnet: this command currently supports macOS only" >&2
+  exit 1
+fi
+
+SERVICES_ARR=()
+
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+add_services_colon() {
+  local raw="$1" part
+  local parts=()
+  IFS=':' read -r -a parts <<< "$raw"
+  for part in "${parts[@]}"; do
+    part="$(trim "$part")"
+    [ -n "$part" ] && SERVICES_ARR+=("$part")
+  done
+}
+
+load_services() {
+  local line
+  if [ -n "${DNET_SERVICES:-}" ]; then
+    add_services_colon "$DNET_SERVICES"
+  elif [ -f "$SERVICE_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="$(trim "$line")"
+      case "$line" in
+        ''|'#'*) continue ;;
+        *:*) add_services_colon "$line" ;;
+        *) SERVICES_ARR+=("$line") ;;
+      esac
+    done < "$SERVICE_FILE"
+  fi
+
+  if [ "${#SERVICES_ARR[@]}" -eq 0 ]; then
+    SERVICES_ARR=("${DEFAULT_SERVICES[@]}")
+  fi
+}
+
+VPN_CLI="${DNET_VPN_CLI:-/opt/cisco/secureclient/bin/vpn}"
+[ -x "$VPN_CLI" ] || VPN_CLI="/opt/cisco/anyconnect/bin/vpn"
+
+vpn_connected() {
+  if [ -x "$VPN_CLI" ]; then
+    "$VPN_CLI" state 2>/dev/null | /usr/bin/grep -q "state: Connected"
+  else
+    # Fallback: a default route on a utun interface means a tunnel is up.
+    /sbin/route -n get default 2>/dev/null | /usr/bin/grep -q "interface: utun"
+  fi
+}
+
+have_service() {
+  /usr/sbin/networksetup -listallnetworkservices 2>/dev/null | /usr/bin/tail -n +2 \
+    | /usr/bin/sed 's/^\* //' | /usr/bin/grep -qxF "$1"
+}
+
+ipv6_off() {
+  /usr/sbin/networksetup -getinfo "$1" 2>/dev/null | /usr/bin/grep -q "^IPv6: Off"
+}
+
+set_off() {
+  if [ "$DRY" = 1 ]; then echo "would: IPv6 Off        on '$1'"; return; fi
+  /usr/sbin/networksetup -setv6off "$1"
+  /usr/bin/logger -t dnet "vpn-ipv6-guard: VPN connected — IPv6 disabled on '$1'"
+}
+
+set_auto() {
+  if [ "$DRY" = 1 ]; then echo "would: IPv6 Automatic  on '$1'"; return; fi
+  /usr/sbin/networksetup -setv6automatic "$1"
+  /usr/bin/logger -t dnet "vpn-ipv6-guard: VPN disconnected — IPv6 restored on '$1'"
+}
+
+flush_dns() {
+  if [ "$DRY" = 1 ]; then echo "would: flush DNS cache"; return; fi
+  /usr/bin/dscacheutil -flushcache
+  /usr/bin/killall -HUP mDNSResponder 2>/dev/null || true
+}
+
+load_services
+
+changed=0
+if vpn_connected; then
+  [ "$DRY" = 1 ] && echo "VPN state: connected -> want IPv6 Off"
+  for svc in "${SERVICES_ARR[@]}"; do
+    if have_service "$svc"; then
+      if ! ipv6_off "$svc"; then set_off "$svc"; changed=1; fi
+    elif [ "$DRY" = 1 ]; then
+      echo "skip: service not found: '$svc'"
+    fi
+  done
+else
+  [ "$DRY" = 1 ] && echo "VPN state: disconnected -> want IPv6 Automatic"
+  for svc in "${SERVICES_ARR[@]}"; do
+    if have_service "$svc"; then
+      if ipv6_off "$svc"; then set_auto "$svc"; changed=1; fi
+    elif [ "$DRY" = 1 ]; then
+      echo "skip: service not found: '$svc'"
+    fi
+  done
+fi
+
+[ "$changed" = 1 ] && flush_dns
+[ "$DRY" = 1 ] && [ "$changed" = 0 ] && echo "(already in desired state — nothing to do)"
+exit 0
