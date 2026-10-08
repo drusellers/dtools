@@ -7,6 +7,9 @@ Guidance for AI agents and maintainers working in this repository.
 - Keep the packaging simple: public commands live in `bin/`; implementation
   helpers live in `libexec/<tool>/`.
 - `bin/dnet` is a dispatcher. Most behavior belongs in `libexec/dnet/*`.
+- `bin/dask` launches the dependency-free Node.js 20+ implementation in
+  `libexec/dask/`. Keep stdout reserved for JSON results during `dask ask`;
+  diagnostics and the session URL belong on stderr.
 - `dnet` is currently macOS-specific. Future tools may target Linux or Windows,
   but do not make `dnet` pretend to support platforms it cannot safely manage.
 
@@ -37,10 +40,14 @@ Guidance for AI agents and maintainers working in this repository.
 Run syntax checks for shell files:
 
 ```bash
-bash -n bin/dnet libexec/dnet/*
+bash -n bin/dnet bin/dask libexec/dnet/*
+node --check libexec/dask/ask.mjs
+node --check libexec/dask/app.js
+node --test libexec/dask/*.test.mjs
 ```
 
-If you add tests later, keep them non-mutating by default. Tests should not
+Keep tests non-mutating by default. The `dask` tests use ephemeral loopback
+servers and do not open a browser. Tests should not
 require sudo, change IPv6 settings, or call `launchctl bootstrap/bootout` unless
 explicitly isolated behind an opt-in flag.
 

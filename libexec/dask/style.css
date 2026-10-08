@@ -1,0 +1,67 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f4f3ef;
+  --card: #fffefa;
+  --text: #252b29;
+  --muted: #68716c;
+  --border: #dadfd8;
+  --accent: #22654b;
+  --selected: #eaf3ed;
+  --error: #b43535;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--text); }
+main { max-width: 780px; margin: 0 auto; padding: 52px 24px 72px; }
+.brand { color: var(--accent); font-weight: 750; letter-spacing: -.03em; font-size: 22px; }
+.brand span { color: var(--muted); font-size: 13px; font-weight: 500; letter-spacing: .04em; }
+h1 { font-size: clamp(28px, 5vw, 38px); line-height: 1.15; letter-spacing: -.035em; margin: 28px 0 12px; overflow-wrap: anywhere; }
+header p { color: var(--muted); line-height: 1.6; margin-bottom: 34px; max-width: 580px; }
+.question { margin: 0 0 28px; padding: 24px; min-width: 0; background: var(--card); border: 1px solid var(--border); border-radius: 16px; }
+legend { font-size: 19px; font-weight: 650; padding: 0 8px; max-width: 100%; overflow-wrap: anywhere; white-space: pre-wrap; }
+.question-meta { margin: 0 0 18px; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: .07em; }
+.option { display: flex; gap: 12px; padding: 15px; margin-bottom: 9px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
+.option-key { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; align-self: flex-start; min-width: 26px; height: 26px; border: 1px solid var(--border); border-radius: 5px; color: var(--accent); font: 600 13px ui-monospace, monospace; }
+.option:hover { border-color: var(--accent); }
+.option:has(input:checked) .option-key { background: var(--accent); color: white; border-color: var(--accent); }
+.option:has(input:checked) { background: var(--selected); border-color: var(--accent); }
+input { accent-color: var(--accent); flex-shrink: 0; margin: 3px 0 0; width: 17px; height: 17px; }
+.option-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.option strong { font-size: 15px; font-weight: 550; }
+.description { display: block; color: var(--muted); font-size: 13px; margin-top: 5px; line-height: 1.5; }
+.note-label { display: block; margin: 0 0 20px; font-size: 13px; font-weight: 550; }
+.note-label span { color: var(--muted); font-weight: 400; }
+.note-toggle { margin-bottom: 18px; padding: 8px 12px; background: transparent; color: var(--accent); border-color: var(--border); font-size: 12px; }
+.note-help { display: block; margin-top: 8px; font-size: 11px; }
+.note-preview { margin: 0 0 20px; padding: 12px 14px; border-left: 3px solid var(--accent); background: var(--bg); border-radius: 0 8px 8px 0; font-size: 14px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.note-preview::before { content: 'NOTE'; display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .07em; }
+textarea { display: block; margin-top: 9px; width: 100%; resize: vertical; min-height: 76px; padding: 12px; font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+/* Heading focus announces the new step, but isn't an interactive selection. */
+legend[tabindex="-1"]:focus, #ready-title:focus { outline: none; }
+footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 22px 0; border-top: 1px solid var(--border); }
+.ready { padding: 24px; margin-bottom: 28px; background: var(--card); border: 1px solid var(--border); border-radius: 16px; }
+.ready h2 { margin: 0 0 12px; font-size: 22px; }
+.ready p { color: var(--muted); line-height: 1.5; margin: 0; }
+#progress { font-size: 14px; }
+.hint { display: block; margin-top: 5px; font-size: 12px; color: var(--muted); }
+.buttons { display: flex; gap: 10px; }
+button { border: 1px solid transparent; background: var(--accent); color: white; padding: 12px 18px; border-radius: 9px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+button:disabled { opacity: .6; cursor: default; }
+.secondary { color: var(--text); border-color: var(--border); background: var(--card); }
+.clear { background: transparent; color: var(--muted); font-size: 12px; padding: 4px 0; }
+.invalid { border-color: var(--error); }
+.card-error { color: var(--error); font-size: 13px; margin-bottom: 0; }
+.card-error:empty { display: none; }
+#message { line-height: 1.5; }
+.success { padding: 18px; border: 1px solid var(--accent); border-radius: 10px; background: var(--selected); }
+@media (max-width: 560px) {
+  main { padding: 30px 16px; }
+  .question { padding: 18px 14px; }
+  footer { align-items: stretch; flex-direction: column; }
+  .buttons button { flex: 1; }
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #181e1b; --card: #212a25; --text: #e3eae5; --muted: #a2b2a8; --border: #3c4941; --accent: #458d69; --selected: #263e30; --error: #ef9191; }
+}

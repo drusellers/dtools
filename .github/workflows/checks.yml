@@ -1,0 +1,29 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Shell syntax
+        run: bash -n bin/dnet bin/dask libexec/dnet/*
+      - name: JavaScript syntax
+        run: |
+          node --check libexec/dask/ask.mjs
+          node --check libexec/dask/app.js
+      - name: Question server and CLI tests
+        run: node --test libexec/dask/*.test.mjs

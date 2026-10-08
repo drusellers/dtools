@@ -1,0 +1,60 @@
+{
+  "title": "Help me plan the implementation",
+  "questions": [
+    {
+      "id": "storage",
+      "prompt": "How should we store the data?",
+      "options": [
+        {
+          "id": "sqlite",
+          "label": "SQLite",
+          "description": "Recommended — local, structured, and easy to query."
+        },
+        {
+          "id": "json",
+          "label": "JSON files",
+          "description": "Simple files with no database."
+        },
+        {
+          "id": "postgres",
+          "label": "Postgres",
+          "description": "A shared database service."
+        }
+      ]
+    },
+    {
+      "id": "priorities",
+      "prompt": "What should I prioritize?",
+      "type": "multiple",
+      "options": [
+        {
+          "id": "simple",
+          "label": "Keep it simple"
+        },
+        {
+          "id": "tests",
+          "label": "Automated tests"
+        },
+        {
+          "id": "polish",
+          "label": "Visual polish"
+        }
+      ]
+    },
+    {
+      "id": "extras",
+      "prompt": "Any extras for this first version?",
+      "required": false,
+      "options": [
+        {
+          "id": "dark-mode",
+          "label": "Dark mode"
+        },
+        {
+          "id": "shortcuts",
+          "label": "Keyboard shortcuts"
+        }
+      ]
+    }
+  ]
+}

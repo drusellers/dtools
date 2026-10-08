@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dask · Questions</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <span class="brand">dask <span> / agent inbox</span></span>
+      <h1 id="title">Loading your questions…</h1>
+      <p>Your choices and notes go back to the agent when you submit. Nothing leaves this Mac.</p>
+    </header>
+    <form id="form">
+      <div id="questions"></div>
+      <section id="ready" class="ready" hidden>
+        <h2 id="ready-title" tabindex="-1">All done. Ready to send?</h2>
+        <p>Your choices and notes are saved for this batch. Go Back if you missed anything.</p>
+      </section>
+      <footer id="actions" hidden>
+        <div><strong id="progress"></strong><span id="hint" class="hint"></span></div>
+        <div class="buttons">
+          <button type="button" id="back" class="secondary" disabled>Back</button>
+          <button type="button" id="cancel" class="secondary">Cancel</button>
+          <button type="submit" id="submit">Send answers →</button>
+        </div>
+      </footer>
+    </form>
+    <p id="message" role="status" aria-live="polite"></p>
+  </main>
+</body>
+</html>
