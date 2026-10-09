@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_self_dir() {
+  local source dir
+  source="${BASH_SOURCE[0]}"
+  while [ -h "$source" ]; do
+    dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
+    source="$(readlink "$source")"
+    [[ "$source" != /* ]] && source="$dir/$source"
+  done
+  cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd
+}
+
+BIN_DIR="$(resolve_self_dir)"
+PREFIX="$(cd "$BIN_DIR/.." >/dev/null 2>&1 && pwd -P)"
+DMAIL_LIBEXEC="${DMAIL_LIBEXEC:-$PREFIX/libexec/dmail}"
+
+if ! command -v node >/dev/null 2>&1; then
+  printf 'dmail: Node.js 20 or newer is required (brew install node).\n' >&2
+  exit 1
+fi
+exec node "$DMAIL_LIBEXEC/mail.mjs" "$@"

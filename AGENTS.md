@@ -10,6 +10,9 @@ Guidance for AI agents and maintainers working in this repository.
 - `bin/dask` launches the dependency-free Node.js 20+ implementation in
   `libexec/dask/`. Keep stdout reserved for JSON results during `dask ask`;
   diagnostics and the session URL belong on stderr.
+- `bin/dmail` launches the dependency-free Node.js 20+ Microsoft Graph client in
+  `libexec/dmail/`. Keep mailbox access read-only and stdout reserved for JSON
+  results (except help). Never log or commit cached access/refresh tokens.
 - `dnet` is currently macOS-specific. Future tools may target Linux or Windows,
   but do not make `dnet` pretend to support platforms it cannot safely manage.
 
@@ -40,14 +43,16 @@ Guidance for AI agents and maintainers working in this repository.
 Run syntax checks for shell files:
 
 ```bash
-bash -n bin/dnet bin/dask libexec/dnet/*
+bash -n bin/dnet bin/dask bin/dmail libexec/dnet/*
 node --check libexec/dask/ask.mjs
 node --check libexec/dask/app.js
-node --test libexec/dask/*.test.mjs
+node --check libexec/dmail/mail.mjs
+node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs
 ```
 
 Keep tests non-mutating by default. The `dask` tests use ephemeral loopback
 servers and do not open a browser. Tests should not
+contact Microsoft or require real mailbox credentials. Tests should not
 require sudo, change IPv6 settings, or call `launchctl bootstrap/bootout` unless
 explicitly isolated behind an opt-in flag.
 

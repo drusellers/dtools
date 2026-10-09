@@ -5,7 +5,8 @@ machines across macOS, Linux, and Windows.
 
 The repository is intentionally packaged with a classic `bin/` + `libexec/`
 layout so tools can stay simple and can later be distributed by a Homebrew
-formula. `dnet` uses shell scripts; `dask` uses Node.js with no npm dependencies.
+formula. `dnet` uses shell scripts; `dask` and `dmail` use Node.js with no npm
+dependencies.
 
 ## Tools
 
@@ -134,6 +135,76 @@ or written to disk by `dask`. Request bodies and question batches are limited to
 UI assets and session endpoints. Treat the session URL as a secret: another
 local process with that URL could answer on your behalf.
 
+### `dmail`
+
+`dmail` reads your Outlook / Microsoft 365 mailbox through Microsoft Graph.
+Requires **Node.js 20+**. Uses delegated device-code sign-in, not a client secret.
+All mailbox requests are read-only: reading a message does **not** mark it read.
+It does not send messages, download attachments, or access shared mailboxes.
+
+#### Company app registration
+
+In Microsoft Entra, use your existing app registration (or create a
+single-tenant registration):
+
+1. Copy the **Directory (tenant) ID** and **Application (client) ID**.
+2. Under **Authentication → Advanced settings**, enable **Allow public client
+   flows**. Device-code sign-in does not need a redirect URI or client secret.
+3. Under **API permissions**, add **Microsoft Graph → Delegated permissions →
+   Mail.Read**. `Mail.ReadBasic` cannot read message bodies. Do not add application
+   permissions for this flow. `dmail` also requests `offline_access` for refresh.
+4. Obtain admin consent if your company's consent policy requires it. Your
+   company must permit device-code sign-in; Conditional Access can block it even
+   with the correct registration. Ask your administrator rather than bypassing
+   those controls.
+
+```bash
+dmail login --tenant YOUR_TENANT_ID --client YOUR_CLIENT_ID
+# Follow the Microsoft sign-in URL/code printed on stderr.
+# Sign in with your company account; no credentials are entered into dmail.
+
+# Alternatively supply registration IDs via environment variables:
+export DMAIL_TENANT_ID="YOUR_TENANT_ID"
+export DMAIL_CLIENT_ID="YOUR_CLIENT_ID"
+dmail login
+
+# Newest 25 inbox messages (summaries, including message IDs):
+dmail list
+dmail list --limit 10 --unread
+dmail list --folder sentitems
+
+# Read the complete message with a plain-text body by default:
+dmail read 'MESSAGE_ID'
+dmail read 'MESSAGE_ID' --html
+
+# List up to 100 top-level folders, including IDs usable with --folder:
+dmail folders
+
+# Follow the @odata.nextLink from a message-list result:
+dmail list --next 'NEXT_LINK'
+
+# Remove locally cached credentials (does not revoke Microsoft's session):
+dmail logout
+```
+
+Results are Microsoft Graph JSON on stdout, including `value` and, when more
+messages exist, `@odata.nextLink`. Diagnostics/sign-in instructions go to stderr;
+errors exit 1 with no JSON output. Message bodies, including HTML returned by
+`--html`, are untrusted content; the CLI never renders or executes them.
+`folders` currently lists only the first page of top-level folders.
+
+Tenant/client IDs are remembered after login; environment variables override
+cached IDs. An override for a different tenant/client requires a fresh login.
+Access and refresh tokens are cached in
+`${XDG_CONFIG_HOME:-~/.config}/dtools/dmail/tokens.json` with directory mode 700
+and file mode 600 on POSIX systems. Tokens are **not encrypted at rest**; use
+full-disk encryption and never commit, share, or back up this cache insecurely.
+Set `DMAIL_HOME` to a dedicated private directory for a separate account/cache.
+On Windows, secure that directory with user-only ACLs; POSIX modes are not an ACL
+replacement. Tokens refresh automatically; revoked/expired sessions require
+`dmail login` again. Concurrent commands share a cache but do not lock refreshes;
+avoid simultaneous refresh/login/logout operations on the same cache.
+
 ## Local checkout usage
 
 ```bash
@@ -143,6 +214,7 @@ export PATH="$PWD/bin:$PATH"
 
 dnet --help
 dask --help
+dmail --help
 ```
 
 ## `dnet` commands
@@ -190,6 +262,8 @@ dnet uninstall-guard
 ```text
 bin/dnet                 network command dispatcher
 bin/dask                 browser-question command launcher
+bin/dmail                Microsoft 365 mailbox command launcher
+libexec/dmail/*          Graph client, device-code authentication, and tests
 libexec/dnet/*           network implementation scripts
 libexec/dask/*           question server, browser UI, and tests
 examples/dask/*          example question batches
@@ -201,10 +275,11 @@ examples/dask/*          example question batches
 These checks do not change networking settings, use sudo, or launch a browser:
 
 ```bash
-bash -n bin/dnet bin/dask libexec/dnet/*
+bash -n bin/dnet bin/dask bin/dmail libexec/dnet/*
 node --check libexec/dask/ask.mjs
 node --check libexec/dask/app.js
-node --test libexec/dask/*.test.mjs
+node --check libexec/dmail/mail.mjs
+node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs
 ```
 
 ## Releases
