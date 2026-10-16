@@ -20,11 +20,13 @@ jobs:
         with:
           node-version: '20'
       - name: Shell syntax
-        run: bash -n bin/dnet bin/dask bin/dmail libexec/dnet/*
+        run: bash -n bin/dnet bin/dask bin/dmail bin/djobs libexec/dnet/*
       - name: JavaScript syntax
         run: |
           node --check libexec/dask/ask.mjs
           node --check libexec/dask/app.js
           node --check libexec/dmail/mail.mjs
+          node --check libexec/djobs/jobs.mjs
+          node --check libexec/djobs/schedules.mjs
       - name: CLI and browser tests
-        run: node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs
+        run: node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs

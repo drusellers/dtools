@@ -1,0 +1,4 @@
+{
+  "excludePrefixes": ["com.google.", "com.microsoft."],
+  "excludeLabels": ["homebrew.mxcl.example"]
+}

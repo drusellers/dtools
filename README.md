@@ -5,8 +5,8 @@ machines across macOS, Linux, and Windows.
 
 The repository is intentionally packaged with a classic `bin/` + `libexec/`
 layout so tools can stay simple and can later be distributed by a Homebrew
-formula. `dnet` uses shell scripts; `dask` and `dmail` use Node.js with no npm
-dependencies.
+formula. `dnet` uses shell scripts; `dask`, `dmail`, and `djobs` use Node.js
+with no npm dependencies.
 
 ## Tools
 
@@ -140,7 +140,8 @@ local process with that URL could answer on your behalf.
 `dmail` reads your Outlook / Microsoft 365 mailbox through Microsoft Graph.
 Requires **Node.js 20+**. Uses delegated device-code sign-in, not a client secret.
 All mailbox requests are read-only: reading a message does **not** mark it read.
-It does not send messages, download attachments, or access shared mailboxes.
+It can list and download file attachments. It does not send messages or access
+shared mailboxes.
 
 #### Company app registration
 
@@ -177,6 +178,13 @@ dmail list --folder sentitems
 dmail read 'MESSAGE_ID'
 dmail read 'MESSAGE_ID' --html
 
+# List attachment IDs and metadata (including inline attachments):
+dmail attachments 'MESSAGE_ID'
+dmail attachments 'MESSAGE_ID' --next 'NEXT_LINK'
+
+# Download one file attachment to an explicit local path:
+dmail download 'MESSAGE_ID' 'ATTACHMENT_ID' --output ./report.pdf
+
 # List up to 100 top-level folders, including IDs usable with --folder:
 dmail folders
 
@@ -193,6 +201,15 @@ errors exit 1 with no JSON output. Message bodies, including HTML returned by
 `--html`, are untrusted content; the CLI never renders or executes them.
 `folders` currently lists only the first page of top-level folders.
 
+`attachments` returns metadata only, with `@odata.nextLink` when another page
+exists. `download` supports file attachments, not attached Outlook items or
+reference links. It returns JSON with the attachment ID, original name, saved
+absolute path, and byte size; file contents never go to stdout. The destination's
+parent directory must exist. Existing files (including symlinks) are never
+overwritten; new files use mode 600 on POSIX. Downloads are buffered in memory.
+Attachment names and contents are untrusted; downloads are never opened or
+executed. No additional Graph permissions are required.
+
 Tenant/client IDs are remembered after login; environment variables override
 cached IDs. An override for a different tenant/client requires a fresh login.
 Access and refresh tokens are cached in
@@ -205,6 +222,100 @@ replacement. Tokens refresh automatically; revoked/expired sessions require
 `dmail login` again. Concurrent commands share a cache but do not lock refreshes;
 avoid simultaneous refresh/login/logout operations on the same cache.
 
+### `djobs`
+
+`djobs` provides a focused, read-only view of `launchctl list` and manages
+user-level interval schedules. Requires **macOS and Node.js 20+**. Run it as
+your normal user in your macOS login session, not with sudo. Listing includes
+loaded jobs plus installed djobs-managed schedules, not every installed plist
+or system daemon. A loaded job without a PID is not currently running.
+
+```bash
+djobs                         # hide com.apple.* and configured exclusions
+djobs worker                  # case-insensitive label substring
+djobs --running               # only jobs with a PID
+djobs --json                  # job details including loaded and schedule
+djobs --all                   # bypass default and configured exclusions
+djobs list --running worker   # optional explicit list command
+djobs --config ./jobs.json
+djobs ignore 'com.microsoft'   # persist an exclude prefix
+djobs ignore 'com.google.' --config ./jobs.json
+```
+
+The table shows PID (`-` when not running), last exit status (not a health
+indicator), label, loaded/unloaded state, and schedule, sorted by label.
+JSON adds `loaded` (boolean) and `schedule` (interval string, or `null` for
+non-managed jobs). Missing PID or unknown exit status is `null` in JSON and
+`-` in the table. Unloaded managed schedules remain visible; `--running` hides
+them. Exclusions and searches also apply to managed schedules.
+Empty results are a header-only table or `[]`; errors go to stderr and exit 1.
+
+Optional user config lives at
+`${XDG_CONFIG_HOME:-~/.config}/dtools/djobs/config.json`.
+Set `DJOBS_CONFIG` or use `--config PATH` to override it (`--config` wins).
+For listing, the default file may be absent; explicitly selected files must
+exist. `djobs ignore PREFIX` creates the selected config and parent directories
+if needed, preserves existing exclusions, and skips duplicate prefixes. It
+writes the config atomically and never calls launchctl. Invalid existing config
+is not overwritten. Avoid simultaneous config edits (there is no write lock).
+
+```json
+{
+  "excludePrefixes": ["com.google.", "com.microsoft."],
+  "excludeLabels": ["homebrew.mxcl.example"]
+}
+```
+
+These case-sensitive, literal exclusions add to the built-in `com.apple.`
+prefix. `djobs ignore 'com.microsoft'` hides every label starting with that
+literal text; use `com.microsoft.` to restrict it to that namespace. No regex
+or glob syntax is needed. `--all` bypasses exclusions but
+still applies search and `--running`. Unknown config keys or invalid config
+fail rather than silently showing an unfiltered list.
+See `examples/djobs/config.json` for a starting point.
+No arbitrary arguments are passed through to launchctl. Listing only uses
+`/bin/launchctl list`; scheduling/removal explicitly manage LaunchAgents.
+
+#### Interval schedules
+
+```bash
+djobs schedule './scripts/run.sh' 2h --name thing
+djobs schedule './scripts/run.sh' 15m --name other --cwd ./project
+djobs list
+djobs unschedule thing
+```
+
+Scripts are run with `/bin/bash -- /absolute/path/to/script`, not an interactive
+or login shell. They must be Bash-compatible and readable; executable permission
+is not required. Resolve your own dependencies inside the script, including mise.
+Use an absolute mise path (find it with `command -v mise`) or set PATH explicitly;
+launchd does not inherit your interactive shell setup. Script and working-directory
+paths are saved absolutely. The working directory defaults to your current
+directory when scheduling; `--cwd` overrides it.
+
+Intervals are positive whole numbers followed by `s`, `m`, `h`, or `d` (e.g.
+`30s`, `15m`, `2h`, `1d`), capped at 2147483647 seconds. This uses launchd's
+`StartInterval`: triggers during sleep or while the job is already running are
+skipped. It does not wake the laptop, catch up missed runs, or run immediately
+when installed. Intervals are not precise wall-clock deadlines and launchd may
+throttle frequent executions. User LaunchAgents require a logged-in session.
+
+`--name` is required: 1–80 letters, digits, underscores, or hyphens, beginning
+with a letter or digit. A name produces the label `com.drusellers.NAME` and
+`~/Library/LaunchAgents/com.drusellers.NAME.plist`. Schedule metadata lives in
+`~/Library/Application Support/dtools/djobs/`; stdout and stderr append to
+`~/Library/Logs/dtools/djobs/NAME.stdout.log` and `NAME.stderr.log`. Logs are not
+rotated automatically. Filter config overrides do not change schedule storage.
+
+Existing labels or plist files are never overwritten. To change an interval,
+unschedule the managed job first. Scheduling loads the agent into `gui/UID`;
+removal verifies ownership, unloads it (stopping any current run), and removes
+its plist and metadata, but keeps logs. Externally changed plists are refused.
+If loading fails, installed files are kept and the error explains how to remove
+them. Schedule edits use a lock; an interrupted edit may leave a `.lock`
+directory in the metadata directory, which must be removed after confirming no
+other edit is active. Tests use fake launchctl calls, never actual job installs.
+
 ## Local checkout usage
 
 ```bash
@@ -215,6 +326,7 @@ export PATH="$PWD/bin:$PATH"
 dnet --help
 dask --help
 dmail --help
+djobs --help
 ```
 
 ## `dnet` commands
@@ -262,11 +374,14 @@ dnet uninstall-guard
 ```text
 bin/dnet                 network command dispatcher
 bin/dask                 browser-question command launcher
+bin/djobs                filtered launchd job listing launcher
 bin/dmail                Microsoft 365 mailbox command launcher
+libexec/djobs/*          listing, config filtering, interval schedules, and tests
 libexec/dmail/*          Graph client, device-code authentication, and tests
 libexec/dnet/*           network implementation scripts
 libexec/dask/*           question server, browser UI, and tests
 examples/dask/*          example question batches
+examples/djobs/*         example job exclusions
 .github/workflows/*      checks and automated GitHub release packaging
 ```
 
@@ -275,11 +390,13 @@ examples/dask/*          example question batches
 These checks do not change networking settings, use sudo, or launch a browser:
 
 ```bash
-bash -n bin/dnet bin/dask bin/dmail libexec/dnet/*
+bash -n bin/dnet bin/dask bin/dmail bin/djobs libexec/dnet/*
 node --check libexec/dask/ask.mjs
 node --check libexec/dask/app.js
 node --check libexec/dmail/mail.mjs
-node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs
+node --check libexec/djobs/jobs.mjs
+node --check libexec/djobs/schedules.mjs
+node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs
 ```
 
 ## Releases

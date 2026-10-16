@@ -4,7 +4,7 @@ import { mkdtemp, rm, stat, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { MailClient, parseArgs, messageListUrl, validateIdentity } from './mail.mjs';
+import { MailClient, parseArgs, messageListUrl, attachmentListUrl, validateIdentity } from './mail.mjs';
 
 const tenant = '11111111-1111-1111-1111-111111111111';
 const client = '22222222-2222-2222-2222-222222222222';
@@ -22,6 +22,72 @@ test('parses commands and rejects ambiguous/invalid arguments', () => {
   for (const args of [['send'], ['read'], ['list', '--limit', '0'], ['list', '--limit', '101'], ['list', '--limit', '1.5'], ['list', '--folder'], ['list', '--unread', '--unread'], ['list', '--next', 'url', '--limit', '1'], ['logout', 'extra']]) {
     assert.throws(() => parseArgs(args));
   }
+});
+
+test('attachment commands require IDs and an explicit output path', () => {
+  assert.deepEqual(parseArgs(['download', 'msg', 'att', '--output', 'report.pdf']), {
+    command: 'download', id: 'msg', attachmentId: 'att', options: { output: 'report.pdf' },
+  });
+  assert.equal(parseArgs(['attachments', 'msg', '--next', 'url']).options.next, 'url');
+  for (const args of [['attachments'], ['attachments', 'msg', 'extra'], ['download'],
+    ['download', 'msg'], ['download', 'msg', 'att'], ['download', 'msg', '--output', 'file'],
+    ['download', 'msg', 'att', '--output'], ['download', 'msg', 'att', '--output', 'file', 'extra']]) {
+    assert.throws(() => parseArgs(args));
+  }
+});
+
+test('attachment listing excludes content bytes and validates pagination against the message', () => {
+  const url = attachmentListUrl('A/B+==');
+  assert.equal(url.pathname, '/v1.0/me/messages/A%2FB%2B%3D%3D/attachments');
+  assert.equal(url.searchParams.get('$select'), 'id,name,contentType,size,isInline');
+  const next = `${url}&$skiptoken=abc`;
+  assert.equal(attachmentListUrl('A/B+==', { next }).href, next);
+  for (const bad of ['https://evil.example/v1.0/me/messages/msg/attachments',
+    'https://graph.microsoft.com/v1.0/me/messages/other/attachments',
+    'https://graph.microsoft.com/v1.0/me/messages/msg',
+    'http://graph.microsoft.com/v1.0/me/messages/msg/attachments',
+    'https://user@graph.microsoft.com/v1.0/me/messages/msg/attachments',
+    'https://graph.microsoft.com/v1.0/me/messages/msg/attachments#fragment']) {
+    assert.throws(() => attachmentListUrl('msg', { next: bad }));
+  }
+});
+
+test('downloads exact binary bytes privately without trusting names or overwriting files', async t => {
+  const bytes = Buffer.from([0, 255, 128, 10, 13]);
+  const calls = [];
+  const mail = await fixture(t, { now: () => 0, fetchImpl: async (url, options) => {
+    calls.push({ url: String(url), options });
+    return String(url).endsWith('/$value') ? new Response(bytes) : response({
+      '@odata.type': '#microsoft.graph.fileAttachment', name: '../../outside.bin',
+    });
+  } });
+  await mail.save({ tenant, client, accessToken: 'token', expiresAt: 3600_000 });
+  const output = join(mail.home, 'safe.bin');
+  const result = await mail.download('msg/+', 'att/+', output, tenant, client);
+  assert.deepEqual(await readFile(output), bytes);
+  assert.equal(result.path, output);
+  assert.equal(result.size, bytes.length);
+  assert.match(calls[1].url, /messages\/msg%2F%2B\/attachments\/att%2F%2B\/\$value$/);
+  assert.equal(calls[1].options.redirect, 'error');
+  assert.equal(calls[1].options.headers.Accept, 'application/octet-stream');
+  if (process.platform !== 'win32') assert.equal((await stat(output)).mode & 0o777, 0o600);
+  await assert.rejects(mail.download('msg', 'att', output, tenant, client), { code: 'EEXIST' });
+  assert.deepEqual(await readFile(output), bytes);
+});
+
+test('unsupported attachment types and Graph failures do not create output files', async t => {
+  const mail = await fixture(t, { now: () => 0 });
+  await mail.save({ tenant, client, accessToken: 'token', expiresAt: 3600_000 });
+  const output = join(mail.home, 'attachment');
+  for (const type of ['itemAttachment', 'referenceAttachment']) {
+    mail.fetch = async () => response({ '@odata.type': `#microsoft.graph.${type}` });
+    await assert.rejects(mail.download('msg', 'att', output, tenant, client), /Only file attachments/);
+  }
+  mail.fetch = async url => String(url).endsWith('/$value') ? response({}, 404) : response({
+    '@odata.type': '#microsoft.graph.fileAttachment',
+  });
+  await assert.rejects(mail.download('msg', 'att', output, tenant, client), /404/);
+  await assert.rejects(readFile(output), { code: 'ENOENT' });
 });
 
 test('tenant and client validation', () => {

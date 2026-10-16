@@ -13,6 +13,13 @@ Guidance for AI agents and maintainers working in this repository.
 - `bin/dmail` launches the dependency-free Node.js 20+ Microsoft Graph client in
   `libexec/dmail/`. Keep mailbox access read-only and stdout reserved for JSON
   results (except help). Never log or commit cached access/refresh tokens.
+- `bin/djobs` launches the dependency-free Node.js 20+ implementation in
+  `libexec/djobs/`. Listing is read-only; `ignore` only changes filter config.
+  `schedule`/`unschedule` manage user LaunchAgents named `com.drusellers.NAME`;
+  never overwrite unrelated jobs or unload jobs without verifying ownership.
+  Use `StartInterval`, not calendar/cron scheduling. Scripts run via `/bin/bash`.
+  Tests must use temporary homes and fake launchctl, never real job installs.
+  User exclusions add to `com.apple.`; do not forward arbitrary launchctl options.
 - `dnet` is currently macOS-specific. Future tools may target Linux or Windows,
   but do not make `dnet` pretend to support platforms it cannot safely manage.
 
@@ -43,11 +50,13 @@ Guidance for AI agents and maintainers working in this repository.
 Run syntax checks for shell files:
 
 ```bash
-bash -n bin/dnet bin/dask bin/dmail libexec/dnet/*
+bash -n bin/dnet bin/dask bin/dmail bin/djobs libexec/dnet/*
 node --check libexec/dask/ask.mjs
 node --check libexec/dask/app.js
 node --check libexec/dmail/mail.mjs
-node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs
+node --check libexec/djobs/jobs.mjs
+node --check libexec/djobs/schedules.mjs
+node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs
 ```
 
 Keep tests non-mutating by default. The `dask` tests use ephemeral loopback

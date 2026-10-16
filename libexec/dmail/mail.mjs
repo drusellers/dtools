@@ -13,6 +13,8 @@ const HELP = `Usage:
   dmail list [--folder inbox] [--limit 25] [--unread]
   dmail list --next NEXT_LINK
   dmail read MESSAGE_ID [--html]
+  dmail attachments MESSAGE_ID [--next NEXT_LINK]
+  dmail download MESSAGE_ID ATTACHMENT_ID --output FILE
   dmail folders
   dmail logout
 
@@ -27,17 +29,18 @@ export function parseArgs(args) {
   const command = args[0];
   const allowed = {
     login: ['tenant', 'client'], list: ['folder', 'limit', 'unread', 'next'],
-    read: ['html'], folders: [], logout: [],
+    read: ['html'], attachments: ['next'], download: ['output'], folders: [], logout: [],
   };
   if (!Object.hasOwn(allowed, command)) throw new Error(`Unknown command: ${command}`);
   const options = {};
   let id;
+  let attachmentId;
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') return { command: 'help' };
-    if (command === 'read' && !arg.startsWith('-') && id === undefined) {
-      id = arg;
-      continue;
+    if (['read', 'attachments', 'download'].includes(command) && !arg.startsWith('-')) {
+      if (id === undefined) { id = arg; continue; }
+      if (command === 'download' && attachmentId === undefined) { attachmentId = arg; continue; }
     }
     const key = arg.startsWith('--') ? arg.slice(2) : '';
     if (!allowed[command].includes(key) || Object.hasOwn(options, key)) {
@@ -50,12 +53,15 @@ export function parseArgs(args) {
       options[key] = value;
     }
   }
-  if (command === 'read' && !id) throw new Error('A message ID is required.');
+  if (['read', 'attachments', 'download'].includes(command) && !id) throw new Error('A message ID is required.');
+  if (command === 'download' && (!attachmentId || !options.output)) {
+    throw new Error('An attachment ID and --output FILE are required.');
+  }
   if (options.limit && (!/^\d+$/.test(options.limit) || +options.limit < 1 || +options.limit > 100)) {
     throw new Error('--limit must be an integer from 1 to 100.');
   }
   if (options.next && Object.keys(options).length !== 1) throw new Error('--next cannot be combined with other options.');
-  return { command, options, id };
+  return { command, options, id, ...(attachmentId === undefined ? {} : { attachmentId }) };
 }
 
 export function validateIdentity(tenant, client) {
@@ -85,6 +91,19 @@ export function messageListUrl(options) {
     url.searchParams.set('$filter', 'receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false');
   }
   url.searchParams.set('$orderby', 'receivedDateTime desc');
+  return url;
+}
+
+export function attachmentListUrl(id, options = {}) {
+  const base = `${GRAPH}/v1.0/me/messages/${encodeURIComponent(id)}/attachments`;
+  const url = new URL(options.next || base);
+  if (url.origin !== GRAPH || url.username || url.password || url.hash || url.pathname !== new URL(base).pathname) {
+    throw new Error('--next must be a Microsoft Graph attachment-list nextLink for this message.');
+  }
+  if (!options.next) {
+    url.searchParams.set('$select', 'id,name,contentType,size,isInline');
+    url.searchParams.set('$top', '100');
+  }
   return url;
 }
 
@@ -183,11 +202,24 @@ export class MailClient {
     return this.storeTokens(tenant, client, data, state.refreshToken);
   }
 
-  async graph(url, tenant, client, html = false) {
+  async download(id, attachmentId, output, tenant, client) {
+    const url = `${GRAPH}/v1.0/me/messages/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}`;
+    const metadata = await this.graph(url + '?$select=id,name,contentType,size', tenant, client);
+    if (metadata['@odata.type'] !== '#microsoft.graph.fileAttachment') {
+      throw new Error('Only file attachments can be downloaded; attached Outlook items and reference links are not supported.');
+    }
+    const bytes = await this.graph(`${url}/$value`, tenant, client, false, true);
+    const path = resolve(output);
+    // Exclusive creation also refuses existing symlinks; never trust an email's filename.
+    await writeFile(path, bytes, { flag: 'wx', mode: 0o600 });
+    return { id: attachmentId, name: metadata.name, path, size: bytes.length };
+  }
+
+  async graph(url, tenant, client, html = false, raw = false) {
     for (let attempt = 0; attempt < 2; attempt++) {
       const token = await this.accessToken(tenant, client, attempt > 0);
       const response = await this.request(url, { headers: {
-        Authorization: `Bearer ${token}`, Accept: 'application/json',
+        Authorization: `Bearer ${token}`, Accept: raw ? 'application/octet-stream' : 'application/json',
         Prefer: `outlook.body-content-type="${html ? 'html' : 'text'}"`,
       } });
       if (response.status === 401 && attempt === 0) continue;
@@ -198,14 +230,14 @@ export class MailClient {
           response.status === 429 ? ` Retry later (Retry-After: ${response.headers.get('retry-after') || 'unspecified'}).` : '';
         throw new Error(`Graph request failed (${response.status}${code ? `, ${code}` : ''}).${hint}`);
       }
-      return response.json();
+      return raw ? Buffer.from(await response.arrayBuffer()) : response.json();
     }
   }
 }
 
 export async function main(args = process.argv.slice(2), env = process.env) {
   if (Number(process.versions.node.split('.')[0]) < 20) throw new Error('Node.js 20 or newer is required.');
-  const { command, options = {}, id } = parseArgs(args);
+  const { command, options = {}, id, attachmentId } = parseArgs(args);
   if (command === 'help') { process.stdout.write(HELP); return; }
   const home = resolve(env.DMAIL_HOME || join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'dtools', 'dmail'));
   const mail = new MailClient({ home });
@@ -220,9 +252,11 @@ export async function main(args = process.argv.slice(2), env = process.env) {
   validateIdentity(tenant, client);
   let result;
   if (command === 'login') result = await mail.login(tenant, client);
+  else if (command === 'download') result = await mail.download(id, attachmentId, options.output, tenant, client);
   else {
     let url;
     if (command === 'list') url = messageListUrl(options);
+    if (command === 'attachments') url = attachmentListUrl(id, options);
     if (command === 'read') {
       url = new URL(`${GRAPH}/v1.0/me/messages/${encodeURIComponent(id)}`);
       url.searchParams.set('$select', `${SUMMARY},ccRecipients,body,internetMessageId`);
