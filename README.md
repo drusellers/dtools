@@ -32,7 +32,8 @@ back to the waiting agent as JSON. Questions appear one at a time: single-choice
 selection advances immediately, while multiple-choice questions use **Next**.
 Options have number shortcuts: **1–9**, then **0** for the tenth option (any
 additional options remain clickable). For multiple-choice questions the number
-toggles that option. **Enter** performs Next/Send. **N** opens or hides notes;
+toggles that option. **R** selects the recommended option(s), advancing on
+single-choice questions like a number key. **Enter** performs Next/Send. **N** opens or hides notes;
 **Escape** closes the note editor, leaving its content visible as read-only text
 and returning focus to **Edit note**. Notes start collapsed.
 While typing a note, normal keys are left alone; **⌘ Enter** (or **Ctrl Enter**)
@@ -65,7 +66,7 @@ dask ask questions.json --no-open --timeout 300
       "prompt": "How should we store the data?",
       "type": "single",
       "options": [
-        { "id": "sqlite", "label": "SQLite", "description": "Recommended" },
+        { "id": "sqlite", "label": "SQLite", "recommended": true },
         { "id": "json", "label": "JSON files" }
       ]
     },
@@ -87,6 +88,8 @@ Question IDs must be unique within a batch; option IDs must be unique within
 each question. `type` defaults to `single`; `required` defaults to `true`.
 Optional questions can have an empty selection and still include a note.
 Titles and option descriptions are optional. Notes are always available.
+Set `"recommended": true` on an option to show a **Recommended** badge; it is
+not preselected. Single-choice questions may recommend at most one option.
 All supplied text is displayed as plain text, not HTML or Markdown.
 
 #### Answer format

@@ -68,10 +68,11 @@ function showStep(index, focus = true) {
   back.disabled = sending || current === 0;
   message.textContent = '';
   const entry = cards[current];
+  const recommendHint = entry && entry.recommended.length ? ' · R for recommended' : '';
   hint.textContent = !entry ? 'Enter to send · Back to change an answer'
     : entry.question.type === 'single'
-      ? 'Number to choose & advance · N for notes · Enter to continue'
-      : 'Numbers to toggle choices · N for notes · Enter for Next';
+      ? 'Number to choose & advance' + recommendHint + ' · N for notes · Enter to continue'
+      : 'Numbers to toggle choices' + recommendHint + ' · N for notes · Enter for Next';
   if (entry) updateNoteToggle(entry);
   updateProgress();
   if (focus) (entry ? entry.legend : document.querySelector('#ready-title')).focus();
@@ -138,6 +139,7 @@ function renderQuestion(question, index) {
     }
     const text = element('span', 'option-text');
     text.append(element('strong', '', option.label));
+    if (option.recommended) text.append(element('span', 'recommended-badge', 'Recommended'));
     if (option.description) text.append(element('span', 'description', option.description));
     label.append(input, text);
     card.append(label);
@@ -160,7 +162,9 @@ function renderQuestion(question, index) {
   }
   card.append(cardError);
   container.append(card);
-  const entry = { question, card, legend, inputs, note, noteLabel, noteToggle, notePreview, cardError };
+  const recommended = inputs.filter((input, optionIndex) => question.options[optionIndex].recommended);
+  if (recommended.length) card.setAttribute('aria-keyshortcuts', 'r');
+  const entry = { question, card, legend, inputs, recommended, note, noteLabel, noteToggle, notePreview, cardError };
   cards.push(entry);
   noteToggle.addEventListener('click', () => toggleNote(entry));
   note.addEventListener('input', () => updateNoteToggle(entry));
@@ -258,6 +262,10 @@ document.addEventListener('keydown', (event) => {
   if (event.key.toLowerCase() === 'n' && entry) {
     event.preventDefault();
     toggleNote(entry);
+  } else if (event.key.toLowerCase() === 'r' && entry && entry.recommended.length) {
+    event.preventDefault();
+    // Select (never toggle off) recommendations; single choice advances as with numbers.
+    entry.recommended.filter((input) => !input.checked).forEach((input) => input.click());
   } else if (/^[0-9]$/.test(event.key) && entry) {
     const index = event.key === '0' ? 9 : Number(event.key) - 1;
     const input = entry.inputs[index];

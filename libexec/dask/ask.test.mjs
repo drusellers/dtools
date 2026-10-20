@@ -61,6 +61,17 @@ test('normalizes question defaults and supports multiple choice', () => {
   assert.equal(batch.questions[1].type, 'multiple');
   assert.equal(batch.questions[2].required, false);
   assert.equal(validateBatch({ questions: fixture.questions }).title, 'A few questions for you');
+  assert.equal(batch.questions[0].options[0].recommended, false);
+});
+
+test('accepts recommended options, at most one for single choice', () => {
+  const options = [{ id: 'a', label: 'A', recommended: true }, { id: 'b', label: 'B', recommended: true }];
+  assert.equal(validateBatch({ questions: [{ id: 'q', prompt: 'Q?', options: [options[0], { id: 'b', label: 'B' }] }] })
+    .questions[0].options[0].recommended, true);
+  assert.deepEqual(validateBatch({ questions: [{ id: 'q', prompt: 'Q?', type: 'multiple', options }] })
+    .questions[0].options.map((option) => option.recommended), [true, true]);
+  assert.throws(() => validateBatch({ questions: [{ id: 'q', prompt: 'Q?', options }] }), /at most one/);
+  assert.throws(() => validateBatch({ questions: [{ id: 'q', prompt: 'Q?', options: [{ id: 'a', label: 'A', recommended: 'yes' }] }] }));
 });
 
 test('rejects invalid or ambiguous batches', () => {

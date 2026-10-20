@@ -8,7 +8,8 @@
         {
           "id": "sqlite",
           "label": "SQLite",
-          "description": "Recommended — local, structured, and easy to query."
+          "description": "Local, structured, and easy to query.",
+          "recommended": true
         },
         {
           "id": "json",

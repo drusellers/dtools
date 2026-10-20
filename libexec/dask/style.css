@@ -29,6 +29,7 @@ legend { font-size: 19px; font-weight: 650; padding: 0 8px; max-width: 100%; ove
 input { accent-color: var(--accent); flex-shrink: 0; margin: 3px 0 0; width: 17px; height: 17px; }
 .option-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .option strong { font-size: 15px; font-weight: 550; }
+.recommended-badge { display: inline-block; margin-left: 8px; padding: 2px 7px; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); font-size: 11px; font-weight: 650; letter-spacing: .04em; vertical-align: 1px; }
 .description { display: block; color: var(--muted); font-size: 13px; margin-top: 5px; line-height: 1.5; }
 .note-label { display: block; margin: 0 0 20px; font-size: 13px; font-weight: 550; }
 .note-label span { color: var(--muted); font-weight: 400; }

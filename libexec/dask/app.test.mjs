@@ -380,3 +380,41 @@ test('collapsed preview preserves multiline plain text and disappears when the n
   app.key('1');
   assert.equal(app.cards[1].card.hidden, false);
 });
+
+test('recommended options show a badge without being preselected', async () => {
+  const app = await ui({ batchInput: { title: 'Pick', questions: [{
+    id: 'pick', prompt: 'Choose', type: 'single', required: true,
+    options: [{ id: 'a', label: 'A', recommended: false }, { id: 'b', label: 'B', recommended: true }],
+  }] } });
+  const badges = (option) => app.cards[0].card.children.filter((node) => node.className === 'option')[option]
+    .children.find((node) => node.className === 'option-text').children
+    .filter((node) => node.className === 'recommended-badge');
+  assert.equal(badges(0).length, 0);
+  assert.equal(badges(1)[0].textContent, 'Recommended');
+  assert.ok(app.cards[0].inputs.every((input) => !input.checked));
+});
+
+test('R selects recommendations: single choice advances, multiple choice adds without toggling off', async () => {
+  const app = await ui({ batchInput: { title: 'Pick', questions: [
+    { id: 'one', prompt: 'One?', type: 'single', required: true,
+      options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B', recommended: true }] },
+    { id: 'many', prompt: 'Many?', type: 'multiple', required: true,
+      options: [{ id: 'x', label: 'X', recommended: true }, { id: 'y', label: 'Y' }, { id: 'z', label: 'Z', recommended: true }] },
+    { id: 'none', prompt: 'None?', type: 'single', required: true, options: [{ id: 'n', label: 'N' }] },
+  ] } });
+  assert.match(app.node('hint').textContent, /R for recommended/);
+  assert.equal(app.key('R').defaultPrevented, true);
+  assert.equal(app.cards[0].inputs[1].checked, true);
+  assert.equal(app.cards[1].card.hidden, false);
+  app.key('1');
+  app.key('2');
+  app.key('r');
+  assert.deepEqual(app.cards[1].inputs.map((input) => input.checked), [true, true, true]);
+  app.key('r');
+  assert.deepEqual(app.cards[1].inputs.map((input) => input.checked), [true, true, true]);
+  assert.equal(app.cards[1].card.hidden, false);
+  app.key('Enter');
+  assert.doesNotMatch(app.node('hint').textContent, /R for recommended/);
+  assert.equal(app.key('r').defaultPrevented, undefined);
+  assert.equal(app.cards[2].inputs[0].checked, false);
+});

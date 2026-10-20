@@ -48,9 +48,11 @@ export function validateBatch(input) {
       requireValue(option && nonempty(option.id) && nonempty(option.label), `${question.id}: each option needs an id and label.`);
       requireValue(!optionIds.has(option.id), `${question.id}: duplicate option id ${option.id}.`);
       requireValue(option.description === undefined || typeof option.description === 'string', `${question.id}: option description must be a string.`);
+      requireValue(option.recommended === undefined || typeof option.recommended === 'boolean', `${question.id}: option recommended must be boolean.`);
       optionIds.add(option.id);
-      return { id: option.id, label: option.label, description: option.description ?? '' };
+      return { id: option.id, label: option.label, description: option.description ?? '', recommended: option.recommended ?? false };
     });
+    requireValue(type !== 'single' || options.filter((option) => option.recommended).length <= 1, `${question.id}: recommend at most one option for a single-choice question.`);
     return { id: question.id, prompt: question.prompt, type, required: question.required ?? true, options };
   });
   return { title: input.title ?? 'A few questions for you', questions };
