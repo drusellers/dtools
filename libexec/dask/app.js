@@ -9,6 +9,21 @@ const cancel = document.querySelector('#cancel');
 const back = document.querySelector('#back');
 const ready = document.querySelector('#ready');
 const hint = document.querySelector('#hint');
+const autoClose = document.querySelector('#auto-close');
+// Sessions use different loopback ports. Cookies (unlike localStorage) remember
+// this browser preference across ports; never store answers or session data here.
+try {
+  autoClose.checked = document.cookie.split(';').some((cookie) => cookie.trim() === 'daskAutoClose=true');
+} catch {
+  // Browser storage may be disabled; the checkbox still works for this session.
+}
+autoClose.addEventListener('change', () => {
+  try {
+    document.cookie = 'daskAutoClose=' + autoClose.checked + '; Max-Age=31536000; Path=/; SameSite=Strict';
+  } catch {
+    // Best effort persistence only.
+  }
+});
 const cards = [];
 let current = 0;
 let sending = false;
@@ -172,12 +187,18 @@ async function send(payload) {
     message.textContent = payload.status === 'answered'
       ? 'Answers delivered to the agent. You can close this tab.'
       : 'Cancelled. The agent has been notified. You can close this tab.';
-    // Most browsers block this for externally opened tabs. Keep the confirmation
-    // intact, and never turn a blocked close into a retry of delivered answers.
-    try {
-      window.close();
-    } catch {
-      // Best effort only; manual closing is the fallback.
+    autoClose.disabled = true;
+    if (autoClose.checked) {
+      message.textContent += ' Auto-close will be attempted in 3 seconds.';
+      // Most browsers block this for externally opened tabs. Keep confirmation
+      // intact, and never turn a blocked close into a retry of delivered answers.
+      setTimeout(() => {
+        try {
+          window.close();
+        } catch {
+          // Best effort only; manual closing is the fallback.
+        }
+      }, 3000);
     }
   } catch (error) {
     message.textContent = error.message + ' If the agent stopped waiting, start a new session.';

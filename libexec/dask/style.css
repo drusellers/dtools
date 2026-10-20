@@ -54,6 +54,8 @@ button:disabled { opacity: .6; cursor: default; }
 .invalid { border-color: var(--error); }
 .card-error { color: var(--error); font-size: 13px; margin-bottom: 0; }
 .card-error:empty { display: none; }
+.setting { display: flex; align-items: flex-start; gap: 10px; margin-top: 16px; font-size: 13px; cursor: pointer; }
+.setting small { display: block; margin-top: 4px; color: var(--muted); }
 #message { line-height: 1.5; }
 .success { padding: 18px; border: 1px solid var(--accent); border-radius: 10px; background: var(--selected); }
 @media (max-width: 560px) {

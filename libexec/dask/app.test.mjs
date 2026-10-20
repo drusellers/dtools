@@ -16,7 +16,8 @@ const batch = {
 
 // A minimal DOM harness tests UI behavior without opening a browser or adding
 // dependencies. It doesn't test browser layout or native radio/keyboard behavior.
-async function ui({ failSend = false, batchInput = batch, closeThrows = false } = {}) {
+async function ui({ failSend = false, batchInput = batch, closeThrows = false,
+  storage = { cookie: '' }, storageThrows = false } = {}) {
   let focused;
   let closeAttempts = 0;
   const elements = [];
@@ -50,11 +51,21 @@ async function ui({ failSend = false, batchInput = batch, closeThrows = false } 
     emit(name) { this.events.get(name)?.({ preventDefault() {} }); }
     focus() { focused = this; }
   }
-  const ids = new Map(['form', 'questions', 'message', 'actions', 'submit', 'cancel', 'back', 'ready', 'hint', 'progress', 'ready-title', 'title']
+  const ids = new Map(['auto-close', 'form', 'questions', 'message', 'actions', 'submit', 'cancel', 'back', 'ready', 'hint', 'progress', 'ready-title', 'title']
     .map((id) => ['#' + id, new Element(['submit', 'cancel', 'back'].includes(id) ? 'button' : 'div')]));
   const posts = [];
+  const timers = [];
   const context = createContext({
+    setTimeout: (callback, delay) => timers.push({ callback, delay }),
     document: {
+      get cookie() {
+        if (storageThrows) throw new Error('Storage blocked');
+        return storage.cookie;
+      },
+      set cookie(value) {
+        if (storageThrows) throw new Error('Storage blocked');
+        storage.cookie = value;
+      },
       querySelector: (id) => ids.get(id), createElement: (tag) => new Element(tag),
       addEventListener: (name, listener) => documentEvents.set(name, listener),
     },
@@ -75,7 +86,8 @@ async function ui({ failSend = false, batchInput = batch, closeThrows = false } 
   await setImmediate();
   const cards = runInContext('cards', context);
   return {
-    cards, posts,
+    cards, posts, timers,
+    runTimers: () => timers.splice(0).forEach(({ callback }) => callback()),
     key: (key, overrides = {}) => {
       const event = { key, target: focused ?? cards[0].legend, ...overrides,
         preventDefault() { this.defaultPrevented = true; } };
@@ -95,6 +107,49 @@ async function ui({ failSend = false, batchInput = batch, closeThrows = false } 
     get closeAttempts() { return closeAttempts; },
   };
 }
+
+test('auto-close preference is off by default and remembers checking and unchecking', async () => {
+  const storage = { cookie: '' };
+  const first = await ui({ storage });
+  assert.equal(first.node('auto-close').checked, false);
+  first.node('auto-close').checked = true;
+  first.node('auto-close').emit('change');
+  assert.match(storage.cookie, /Max-Age=31536000; Path=\/; SameSite=Strict/);
+  const second = await ui({ storage });
+  assert.equal(second.node('auto-close').checked, true);
+  second.node('auto-close').checked = false;
+  second.node('auto-close').emit('change');
+  const third = await ui({ storage });
+  assert.equal(third.node('auto-close').checked, false);
+});
+
+test('enabled auto-close waits three seconds after cancellation', async () => {
+  const app = await ui({ storage: { cookie: 'other=value; daskAutoClose=true' } });
+  app.node('cancel').emit('click');
+  await setImmediate();
+  assert.equal(app.closeAttempts, 0);
+  assert.equal(app.timers.length, 1);
+  assert.equal(app.timers[0].delay, 3000);
+  app.runTimers();
+  assert.equal(app.closeAttempts, 1);
+});
+
+test('blocked storage does not prevent answering or session-only auto-close', async () => {
+  const app = await ui({ storageThrows: true });
+  assert.equal(app.node('auto-close').checked, false);
+  app.node('auto-close').checked = true;
+  app.node('auto-close').emit('change');
+  app.key('1');
+  app.key('1');
+  app.key('Enter');
+  app.key('Enter');
+  app.key('Enter');
+  await setImmediate();
+  assert.equal(app.posts.length, 1);
+  assert.equal(app.timers[0].delay, 3000);
+  app.runTimers();
+  assert.equal(app.closeAttempts, 1);
+});
 
 test('single-choice clears the current card; notes survive Back and edits', async () => {
   const app = await ui();
@@ -153,7 +208,8 @@ test('multiple choice stays until Next; optional skip and final send preserve al
   assert.equal(app.node('actions').hidden, true);
   assert.equal(app.node('ready').hidden, true);
   assert.match(app.node('message').textContent, /delivered/);
-  assert.equal(app.closeAttempts, 1);
+  assert.equal(app.closeAttempts, 0);
+  assert.equal(app.timers.length, 0);
 });
 
 test('cancel works mid-batch and does not send partial answers', async () => {
@@ -163,11 +219,12 @@ test('cancel works mid-batch and does not send partial answers', async () => {
   await setImmediate();
   assert.deepEqual(app.posts, [{ status: 'cancelled' }]);
   assert.equal(app.node('questions').hidden, true);
-  assert.equal(app.closeAttempts, 1);
+  assert.equal(app.closeAttempts, 0);
+  assert.equal(app.timers.length, 0);
 });
 
 test('failed submission keeps choices and notes editable', async () => {
-  const app = await ui({ failSend: true });
+  const app = await ui({ failSend: true, storage: { cookie: 'daskAutoClose=true' } });
   app.choose(0, 0);
   app.choose(1, 0);
   app.next();
@@ -175,6 +232,7 @@ test('failed submission keeps choices and notes editable', async () => {
   app.next();
   await setImmediate();
   assert.match(app.node('message').textContent, /Try again/);
+  assert.equal(app.timers.length, 0);
   assert.equal(app.closeAttempts, 0);
   assert.equal(app.node('submit').disabled, false);
   assert.equal(app.node('back').disabled, false);
@@ -185,13 +243,17 @@ test('failed submission keeps choices and notes editable', async () => {
 });
 
 test('blocked auto-close leaves the successful confirmation intact and prevents resubmission', async () => {
-  const app = await ui({ closeThrows: true });
+  const app = await ui({ closeThrows: true, storage: { cookie: 'daskAutoClose=true' } });
   app.key('1');
   app.key('1');
   app.key('Enter');
   app.key('Enter');
   app.key('Enter');
   await setImmediate();
+  assert.equal(app.closeAttempts, 0);
+  assert.equal(app.timers.length, 1);
+  assert.equal(app.timers[0].delay, 3000);
+  app.runTimers();
   assert.equal(app.closeAttempts, 1);
   assert.match(app.node('message').textContent, /Answers delivered.*close this tab/);
   assert.equal(app.node('actions').hidden, true);
