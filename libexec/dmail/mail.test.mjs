@@ -4,7 +4,7 @@ import { mkdtemp, rm, stat, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { MailClient, parseArgs, messageListUrl, attachmentListUrl, validateIdentity } from './mail.mjs';
+import { MailClient, parseArgs, messageListUrl, searchUrl, attachmentListUrl, validateIdentity } from './mail.mjs';
 
 const tenant = '11111111-1111-1111-1111-111111111111';
 const client = '22222222-2222-2222-2222-222222222222';
@@ -111,9 +111,100 @@ test('list encodes folder IDs, selects summaries, and orders unread filter corre
 test('pagination links cannot leak bearer tokens outside Graph or access other endpoints', () => {
   const link = 'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$skiptoken=abc';
   assert.equal(messageListUrl({ next: link }).href, link);
+  for (const path of ["mailFolders('sentitems')/messages", "mailFolders('archive')/messages", 'messages']) {
+    const next = `https://graph.microsoft.com/v1.0/me/${path}?$skip=100`;
+    assert.equal(messageListUrl({ next }).href, next);
+  }
   for (const next of ['https://evil.example/v1.0/me/messages', 'http://graph.microsoft.com/v1.0/me/messages', 'https://graph.microsoft.com/v1.0/users', 'https://user@graph.microsoft.com/v1.0/me/messages', `${link}#fragment`]) {
     assert.throws(() => messageListUrl({ next }));
   }
+});
+
+test('search, thread, date and automatic paging arguments are validated', () => {
+  assert.equal(parseArgs(['search', 'eShipping', '--from', 'Jeff', '--since', '2026-09-23']).id, 'eShipping');
+  assert.equal(parseArgs(['search', '--to', 'Dru']).options.to, 'Dru');
+  assert.equal(parseArgs(['thread', 'msg', '--html']).id, 'msg');
+  assert.equal(parseArgs(['list', '--next', 'url', '--all', '--max-pages', '2']).options.all, true);
+  for (const args of [['search'], ['search', 'one', 'two'], ['thread'], ['list', '--max-pages', '2'],
+    ['search', 'x', '--max-pages', '0'], ['thread', 'msg', '--max-pages', '101'],
+    ['list', '--since', '2026-02-30'], ['search', 'x', '--since', 'yesterday'],
+    ['search', 'x', '--since', '2026-10-01', '--before', '2026-10-01'],
+    ['list', '--next', 'url', '--since', '2026-10-01']]) assert.throws(() => parseArgs(args));
+});
+
+test('search uses mailbox-wide KQL without unsupported filter/orderby combinations', () => {
+  const url = searchUrl('eShipping OR freight', { from: 'Jeff Guttry', to: 'dru@example.com', since: '2026-09-23', before: '2026-10-24', limit: '20' });
+  assert.equal(url.pathname, '/v1.0/me/messages');
+  assert.equal(JSON.parse(url.searchParams.get('$search')), '(eShipping OR freight) AND from:"Jeff Guttry" AND to:"dru@example.com" AND received>=2026-09-23 AND received<2026-10-24');
+  assert.equal(url.searchParams.get('$top'), '20');
+  assert.equal(url.searchParams.has('$filter'), false);
+  assert.equal(url.searchParams.has('$orderby'), false);
+  for (const from of ['bad" OR subject:x', 'bad\\name', 'bad\nname']) assert.throws(() => searchUrl('x', { from }));
+  const list = messageListUrl({ since: '2026-09-23', before: '2026-10-24', unread: true });
+  assert.equal(list.searchParams.get('$filter'), 'receivedDateTime ge 2026-09-23T00:00:00Z and receivedDateTime lt 2026-10-24T00:00:00Z and isRead eq false');
+});
+
+test('collection follows Graph links and reports bounded and exhausted coverage', async t => {
+  const mail = await fixture(t);
+  const next = "https://graph.microsoft.com/v1.0/me/mailFolders('archive')/messages?$skip=1";
+  const calls = [];
+  mail.graph = async url => {
+    calls.push(String(url));
+    return calls.length === 1 ? { value: [{ id: 'one' }], '@odata.nextLink': next } : { value: [{ id: 'two' }] };
+  };
+  const bounded = await mail.collect(messageListUrl({}), tenant, client, { maxPages: 1 });
+  assert.deepEqual(bounded.coverage, { count: 1, pages: 1, complete: false, reason: 'max_pages' });
+  assert.equal(bounded['@odata.nextLink'], next);
+  calls.length = 0;
+  const full = await mail.collect(messageListUrl({}), tenant, client);
+  assert.deepEqual(full.value.map(m => m.id), ['one', 'two']);
+  assert.equal(calls[1], next);
+  assert.equal(full.coverage.complete, true);
+  mail.graph = async () => ({ value: [] });
+  assert.equal((await mail.collect(messageListUrl({}), tenant, client)).coverage.count, 0);
+  mail.graph = async () => ({ value: Array.from({ length: 1000 }, (_, i) => ({ id: String(i) })) });
+  const capped = await mail.collect(searchUrl('x'), tenant, client, { search: true });
+  assert.equal(capped.coverage.complete, false);
+  assert.equal(capped.coverage.reason, 'search_limit');
+});
+
+test('automatic pagination rejects hostile and repeated links and propagates failures', async t => {
+  const mail = await fixture(t);
+  let calls = 0;
+  mail.graph = async () => { calls++; return { value: [], '@odata.nextLink': 'https://evil.example/v1.0/me/messages' }; };
+  await assert.rejects(mail.collect(messageListUrl({}), tenant, client), /Microsoft Graph/);
+  assert.equal(calls, 1);
+  const url = messageListUrl({}).href;
+  mail.graph = async () => ({ value: [], '@odata.nextLink': url });
+  await assert.rejects(mail.collect(url, tenant, client), /repeated/);
+  mail.graph = async () => { throw new Error('Graph failed'); };
+  await assert.rejects(mail.collect(url, tenant, client), /Graph failed/);
+  mail.graph = async () => ({});
+  await assert.rejects(mail.collect(url, tenant, client), /invalid message page/);
+});
+
+test('thread resolves conversation ID, loads full bodies across folders, and sorts chronologically', async t => {
+  const mail = await fixture(t);
+  const calls = [];
+  const next = 'https://graph.microsoft.com/v1.0/me/messages?$skip=100';
+  mail.graph = async (url, tenantArg, clientArg, html) => {
+    calls.push({ url: new URL(url), html });
+    assert.equal(tenantArg, tenant);
+    assert.equal(clientArg, client);
+    if (calls.length === 1) return { conversationId: "thread'1" };
+    if (calls.length === 2) return { value: [{ id: 'new', sentDateTime: '2026-10-23', body: { content: 'reply' } }], '@odata.nextLink': next };
+    return { value: [{ id: 'old', sentDateTime: '2026-10-01', body: { content: 'original' } }] };
+  };
+  const result = await mail.thread('msg/+', { html: true }, tenant, client);
+  assert.equal(calls[0].url.pathname, '/v1.0/me/messages/msg%2F%2B');
+  assert.equal(calls[1].url.searchParams.get('$filter'), "conversationId eq 'thread''1'");
+  assert.equal(calls[1].url.pathname, '/v1.0/me/messages');
+  assert.ok(calls[1].url.searchParams.get('$select').split(',').includes('body'));
+  assert.equal(calls[2].html, true);
+  assert.deepEqual(result.value.map(m => m.id), ['old', 'new']);
+  assert.equal(result.coverage.complete, true);
+  mail.graph = async () => ({});
+  await assert.rejects(mail.thread('msg', {}, tenant, client), /no conversation ID/);
 });
 
 test('device-code login handles pending, slow_down, and privately caches tokens', async t => {

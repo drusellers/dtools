@@ -4,32 +4,46 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { appendUsage, usageEvent, usageSummary } from './usage.mjs';
 
 const GRAPH = 'https://graph.microsoft.com';
 const SCOPES = 'https://graph.microsoft.com/Mail.Read offline_access';
-const SUMMARY = 'id,subject,from,toRecipients,receivedDateTime,isRead,hasAttachments,bodyPreview,webLink';
+const SUMMARY = 'id,subject,from,toRecipients,receivedDateTime,sentDateTime,conversationId,parentFolderId,isRead,hasAttachments,bodyPreview,webLink';
+const DETAIL = `${SUMMARY},ccRecipients,body,internetMessageId`;
 const HELP = `Usage:
   dmail login --tenant TENANT_ID --client CLIENT_ID
-  dmail list [--folder inbox] [--limit 25] [--unread]
-  dmail list --next NEXT_LINK
+  dmail list [--folder inbox] [--limit 25] [--unread] [--since DATE] [--before DATE]
+  dmail list [--all] [--max-pages 10] [--next NEXT_LINK]
+  dmail search [QUERY] [--from PERSON] [--to PERSON] [--since DATE] [--before DATE]
+               [--limit 100] [--max-pages 10]
+  dmail thread MESSAGE_ID [--html] [--max-pages 10]
   dmail read MESSAGE_ID [--html]
   dmail attachments MESSAGE_ID [--next NEXT_LINK]
   dmail download MESSAGE_ID ATTACHMENT_ID --output FILE
   dmail folders
+  dmail usage [--since DATE] [--before DATE]
   dmail logout
 
+Dates: YYYY-MM-DD; --since inclusive, --before exclusive.
+Search accepts KQL and spans mailbox folders (Microsoft caps search at 1,000 results).
+Search/thread auto-page; list requires --all. Page bounds: --max-pages 1-100.
+Paged JSON includes coverage; check complete/reason before assuming all matches.
 JSON results go to stdout; sign-in instructions and errors go to stderr.
 Tenant/client default to DMAIL_TENANT_ID / DMAIL_CLIENT_ID, then cached values.
 Requires Node.js 20+. Uses delegated Mail.Read; never changes mailbox state.
-DMAIL_HOME overrides the private local token-cache directory.
+DMAIL_HOME overrides the private local token-cache and usage-log directory.
+Command shapes/stats are logged locally for 90 days; DMAIL_USAGE_LOG=0 disables logging.
+No query text, identities, message IDs, response content, or credentials are logged.
 `;
 
 export function parseArgs(args) {
   if (!args.length || args[0] === '--help' || args[0] === '-h') return { command: 'help' };
   const command = args[0];
   const allowed = {
-    login: ['tenant', 'client'], list: ['folder', 'limit', 'unread', 'next'],
-    read: ['html'], attachments: ['next'], download: ['output'], folders: [], logout: [],
+    login: ['tenant', 'client'], list: ['folder', 'limit', 'unread', 'next', 'all', 'max-pages', 'since', 'before'],
+    search: ['from', 'to', 'since', 'before', 'limit', 'max-pages'],
+    thread: ['html', 'max-pages'], read: ['html'], attachments: ['next'], download: ['output'], folders: [], logout: [],
+    usage: ['since', 'before'],
   };
   if (!Object.hasOwn(allowed, command)) throw new Error(`Unknown command: ${command}`);
   const options = {};
@@ -38,7 +52,7 @@ export function parseArgs(args) {
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') return { command: 'help' };
-    if (['read', 'attachments', 'download'].includes(command) && !arg.startsWith('-')) {
+    if (['read', 'attachments', 'download', 'thread', 'search'].includes(command) && !arg.startsWith('-')) {
       if (id === undefined) { id = arg; continue; }
       if (command === 'download' && attachmentId === undefined) { attachmentId = arg; continue; }
     }
@@ -46,21 +60,37 @@ export function parseArgs(args) {
     if (!allowed[command].includes(key) || Object.hasOwn(options, key)) {
       throw new Error(`Unexpected argument: ${arg}`);
     }
-    if (key === 'unread' || key === 'html') options[key] = true;
+    if (['unread', 'html', 'all'].includes(key)) options[key] = true;
     else {
       const value = args[++i];
       if (!value || value.startsWith('--')) throw new Error(`Missing value for ${arg}`);
       options[key] = value;
     }
   }
-  if (['read', 'attachments', 'download'].includes(command) && !id) throw new Error('A message ID is required.');
+  if (['read', 'attachments', 'download', 'thread'].includes(command) && !id) throw new Error('A message ID is required.');
   if (command === 'download' && (!attachmentId || !options.output)) {
     throw new Error('An attachment ID and --output FILE are required.');
   }
   if (options.limit && (!/^\d+$/.test(options.limit) || +options.limit < 1 || +options.limit > 100)) {
     throw new Error('--limit must be an integer from 1 to 100.');
   }
-  if (options.next && Object.keys(options).length !== 1) throw new Error('--next cannot be combined with other options.');
+  if (options['max-pages'] && (!/^\d+$/.test(options['max-pages']) || +options['max-pages'] < 1 || +options['max-pages'] > 100)) {
+    throw new Error('--max-pages must be an integer from 1 to 100.');
+  }
+  if (command === 'list' && options['max-pages'] && !options.all) throw new Error('--max-pages requires --all.');
+  for (const key of ['since', 'before']) {
+    const date = options[key];
+    if (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date)) {
+      throw new Error(`--${key} must be a valid YYYY-MM-DD date (UTC).`);
+    }
+  }
+  if (options.since && options.before && options.since >= options.before) throw new Error('--since must precede --before.');
+  if (command === 'search' && !id && !['from', 'to', 'since', 'before'].some(key => options[key])) {
+    throw new Error('Provide a search query or person/date filter.');
+  }
+  if (options.next && Object.keys(options).some(key => !['next', ...(command === 'list' ? ['all', 'max-pages'] : [])].includes(key))) {
+    throw new Error('--next cannot be combined with filters or --limit.');
+  }
   return { command, options, id, ...(attachmentId === undefined ? {} : { attachmentId }) };
 }
 
@@ -78,7 +108,7 @@ export function messageListUrl(options) {
   if (options.next) {
     const url = new URL(options.next);
     if (url.origin !== GRAPH || url.username || url.password || url.hash ||
-        !/^\/v1\.0\/me\/(?:mailFolders\/[^/]+\/)?messages$/.test(url.pathname)) {
+        !/^\/v1\.0\/me\/(?:mailFolders(?:\/[^/]+|\('[^'/]+'\))\/)?messages$/.test(url.pathname)) {
       throw new Error('--next must be a Microsoft Graph message-list nextLink.');
     }
     return url;
@@ -86,11 +116,31 @@ export function messageListUrl(options) {
   const url = new URL(`${GRAPH}/v1.0/me/mailFolders/${encodeURIComponent(options.folder || 'inbox')}/messages`);
   url.searchParams.set('$select', SUMMARY);
   url.searchParams.set('$top', options.limit || '25');
-  if (options.unread) {
-    // Graph requires order-by properties first in the filter to avoid InefficientFilter.
-    url.searchParams.set('$filter', 'receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false');
-  }
+  const filters = [];
+  if (options.since || options.unread) filters.push(`receivedDateTime ge ${options.since || '1970-01-01'}T00:00:00Z`);
+  if (options.before) filters.push(`receivedDateTime lt ${options.before}T00:00:00Z`);
+  // Graph requires order-by properties first in the filter to avoid InefficientFilter.
+  if (options.unread) filters.push('isRead eq false');
+  if (filters.length) url.searchParams.set('$filter', filters.join(' and '));
   url.searchParams.set('$orderby', 'receivedDateTime desc');
+  return url;
+}
+
+export function searchUrl(query, options = {}) {
+  const terms = [];
+  if (query) terms.push(`(${query})`);
+  // Quote structured values as KQL phrases; disallow escapes/operators inside them.
+  for (const key of ['from', 'to']) {
+    if (!options[key]) continue;
+    if (/["\\\r\n]/.test(options[key])) throw new Error(`--${key} cannot contain quotes, backslashes, or newlines.`);
+    terms.push(`${key}:"${options[key]}"`);
+  }
+  if (options.since) terms.push(`received>=${options.since}`);
+  if (options.before) terms.push(`received<${options.before}`);
+  const url = new URL(`${GRAPH}/v1.0/me/messages`);
+  url.searchParams.set('$search', JSON.stringify(terms.join(' AND ')));
+  url.searchParams.set('$select', SUMMARY);
+  url.searchParams.set('$top', options.limit || '100');
   return url;
 }
 
@@ -139,7 +189,7 @@ export class MailClient {
     try {
       return await this.fetch(url, { ...options, redirect: 'error', signal: AbortSignal.timeout(30_000) });
     } catch {
-      throw new Error('Request failed or timed out. Check your network/VPN and try again.');
+      throw Object.assign(new Error('Request failed or timed out. Check your network/VPN and try again.'), { usageCode: 'network' });
     }
   }
 
@@ -215,6 +265,43 @@ export class MailClient {
     return { id: attachmentId, name: metadata.name, path, size: bytes.length };
   }
 
+  async collect(url, tenant, client, { maxPages = 10, html = false, search = false } = {}) {
+    const value = [];
+    const seen = new Set();
+    let pages = 0;
+    let next = String(url);
+    while (next && pages < maxPages) {
+      if (seen.has(next)) throw new Error('Microsoft returned a repeated pagination link.');
+      seen.add(next);
+      const page = await this.graph(messageListUrl({ next }), tenant, client, html);
+      if (!Array.isArray(page.value)) throw new Error('Microsoft returned an invalid message page.');
+      value.push(...page.value);
+      next = page['@odata.nextLink'];
+      pages++;
+    }
+    const searchLimit = search && value.length >= 1000;
+    return {
+      value,
+      ...(next ? { '@odata.nextLink': next } : {}),
+      coverage: { count: value.length, pages, complete: !next && !searchLimit,
+        reason: next ? 'max_pages' : searchLimit ? 'search_limit' : 'exhausted' },
+    };
+  }
+
+  async thread(id, options, tenant, client) {
+    const seed = new URL(`${GRAPH}/v1.0/me/messages/${encodeURIComponent(id)}`);
+    seed.searchParams.set('$select', 'conversationId');
+    const message = await this.graph(seed, tenant, client);
+    if (!message.conversationId) throw new Error('Message has no conversation ID.');
+    const url = new URL(`${GRAPH}/v1.0/me/messages`);
+    url.searchParams.set('$filter', `conversationId eq '${message.conversationId.replace(/'/g, "''")}'`);
+    url.searchParams.set('$select', DETAIL);
+    url.searchParams.set('$top', '100');
+    const result = await this.collect(url, tenant, client, { maxPages: +(options['max-pages'] || 10), html: options.html });
+    result.value.sort((a, b) => (a.sentDateTime || a.receivedDateTime || '').localeCompare(b.sentDateTime || b.receivedDateTime || '') || a.id.localeCompare(b.id));
+    return { conversationId: message.conversationId, ...result };
+  }
+
   async graph(url, tenant, client, html = false, raw = false) {
     for (let attempt = 0; attempt < 2; attempt++) {
       const token = await this.accessToken(tenant, client, attempt > 0);
@@ -228,23 +315,19 @@ export class MailClient {
         try { code = (await response.json()).error?.code || ''; } catch { /* Non-JSON gateway errors. */ }
         const hint = response.status === 403 ? ' Check delegated Mail.Read permission and company consent/policies.' :
           response.status === 429 ? ` Retry later (Retry-After: ${response.headers.get('retry-after') || 'unspecified'}).` : '';
-        throw new Error(`Graph request failed (${response.status}${code ? `, ${code}` : ''}).${hint}`);
+        throw Object.assign(new Error(`Graph request failed (${response.status}${code ? `, ${code}` : ''}).${hint}`), { usageCode: `http_${response.status}` });
       }
       return raw ? Buffer.from(await response.arrayBuffer()) : response.json();
     }
   }
 }
 
-export async function main(args = process.argv.slice(2), env = process.env) {
-  if (Number(process.versions.node.split('.')[0]) < 20) throw new Error('Node.js 20 or newer is required.');
-  const { command, options = {}, id, attachmentId } = parseArgs(args);
-  if (command === 'help') { process.stdout.write(HELP); return; }
-  const home = resolve(env.DMAIL_HOME || join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'dtools', 'dmail'));
+async function execute({ command, options = {}, id, attachmentId }, env, home) {
+  if (command === 'usage') return usageSummary(home, options);
   const mail = new MailClient({ home });
   if (command === 'logout') {
     await rm(mail.cachePath, { force: true });
-    console.log(JSON.stringify({ status: 'signed_out' }));
-    return;
+    return { status: 'signed_out' };
   }
   const cached = await mail.load();
   const tenant = options.tenant || env.DMAIL_TENANT_ID || cached?.tenant;
@@ -253,13 +336,17 @@ export async function main(args = process.argv.slice(2), env = process.env) {
   let result;
   if (command === 'login') result = await mail.login(tenant, client);
   else if (command === 'download') result = await mail.download(id, attachmentId, options.output, tenant, client);
-  else {
+  else if (command === 'thread') result = await mail.thread(id, options, tenant, client);
+  else if (command === 'search' || (command === 'list' && options.all)) {
+    result = await mail.collect(command === 'search' ? searchUrl(id, options) : messageListUrl(options), tenant, client,
+      { maxPages: +(options['max-pages'] || 10), search: command === 'search' });
+  } else {
     let url;
     if (command === 'list') url = messageListUrl(options);
     if (command === 'attachments') url = attachmentListUrl(id, options);
     if (command === 'read') {
       url = new URL(`${GRAPH}/v1.0/me/messages/${encodeURIComponent(id)}`);
-      url.searchParams.set('$select', `${SUMMARY},ccRecipients,body,internetMessageId`);
+      url.searchParams.set('$select', DETAIL);
     }
     if (command === 'folders') {
       url = new URL(`${GRAPH}/v1.0/me/mailFolders`);
@@ -268,7 +355,33 @@ export async function main(args = process.argv.slice(2), env = process.env) {
     }
     result = await mail.graph(url, tenant, client, options.html);
   }
-  console.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
+export async function main(args = process.argv.slice(2), env = process.env) {
+  if (Number(process.versions.node.split('.')[0]) < 20) throw new Error('Node.js 20 or newer is required.');
+  const home = resolve(env.DMAIL_HOME || join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'dtools', 'dmail'));
+  const started = performance.now();
+  let parsed, result, failure;
+  try {
+    try { parsed = parseArgs(args); }
+    catch (error) { error.usageCode = 'invalid_arguments'; throw error; }
+    if (parsed.command === 'help') { process.stdout.write(HELP); return; }
+    result = await execute(parsed, env, home);
+    console.log(JSON.stringify(result, null, 2));
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    // Usage/help must not create their own history. Never let logging break mail.
+    if (env.DMAIL_USAGE_LOG !== '0' && !['help', 'usage'].includes(parsed?.command || args[0]) && args.length) {
+      try {
+        const event = usageEvent({ parsed, command: args[0], result, error: failure, durationMs: performance.now() - started });
+        await appendUsage(home, event);
+      }
+      catch { console.error('dmail: Usage logging unavailable; command result is unchanged.'); }
+    }
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

@@ -13,6 +13,10 @@ Guidance for AI agents and maintainers working in this repository.
 - `bin/dmail` launches the dependency-free Node.js 20+ Microsoft Graph client in
   `libexec/dmail/`. Keep mailbox access read-only and stdout reserved for JSON
   results (except help). Never log or commit cached access/refresh tokens.
+  Local usage logs must allowlist command shapes and numeric stats only: never
+  log queries, people, message IDs, paths, response content, or raw errors.
+  Keep logs private, daily-rotated, and retained for 90 days; respect
+  `DMAIL_USAGE_LOG=0`. Logging failures must not break mailbox commands.
 - `bin/djobs` launches the dependency-free Node.js 20+ implementation in
   `libexec/djobs/`. Listing is read-only; `ignore` only changes filter config.
   `schedule`/`unschedule` manage user LaunchAgents named `com.drusellers.NAME`;
@@ -54,6 +58,7 @@ bash -n bin/dnet bin/dask bin/dmail bin/djobs libexec/dnet/*
 node --check libexec/dask/ask.mjs
 node --check libexec/dask/app.js
 node --check libexec/dmail/mail.mjs
+node --check libexec/dmail/usage.mjs
 node --check libexec/djobs/jobs.mjs
 node --check libexec/djobs/schedules.mjs
 node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs

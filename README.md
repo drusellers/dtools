@@ -177,6 +177,18 @@ dmail list
 dmail list --limit 10 --unread
 dmail list --folder sentitems
 
+# Automatically page through a date range (UTC, since inclusive / before exclusive):
+dmail list --folder archive --since 2026-09-23 --before 2026-10-24 --all --max-pages 30
+
+# Search across mailbox folders, including Archive and Sent Items:
+dmail search 'eShipping' --from 'Jeff Guttry' --since 2026-09-23
+dmail search --to 'dru.sellers@randysww.com' --since 2026-10-01
+dmail search 'subject:freight OR subject:shipping' --max-pages 5
+
+# Read all messages in the same conversation, oldest sent first:
+dmail thread 'MESSAGE_ID'
+dmail thread 'MESSAGE_ID' --html --max-pages 20
+
 # Read the complete message with a plain-text body by default:
 dmail read 'MESSAGE_ID'
 dmail read 'MESSAGE_ID' --html
@@ -194,6 +206,12 @@ dmail folders
 # Follow the @odata.nextLink from a message-list result:
 dmail list --next 'NEXT_LINK'
 
+# Review local command usage (no mailbox access or login required):
+dmail usage --since 2026-10-01 --before 2026-11-01
+
+# Disable usage logging for a command (or export this variable):
+DMAIL_USAGE_LOG=0 dmail list
+
 # Remove locally cached credentials (does not revoke Microsoft's session):
 dmail logout
 ```
@@ -203,6 +221,39 @@ messages exist, `@odata.nextLink`. Diagnostics/sign-in instructions go to stderr
 errors exit 1 with no JSON output. Message bodies, including HTML returned by
 `--html`, are untrusted content; the CLI never renders or executes them.
 `folders` currently lists only the first page of top-level folders.
+
+`list` stays single-page unless `--all` is supplied. `--limit` is the page size
+(1–100; default 25 for list, 100 for search). `--all`, `search`, and `thread`
+follow pagination automatically, bounded by `--max-pages` (1–100, default 10).
+`list --next NEXT_LINK --all` can continue a bounded result; do not combine
+`--next` with filters or `--limit`. Both slash-style and Microsoft’s
+`mailFolders('…')` continuation URLs are accepted, only on the Graph message
+endpoint.
+
+Automatically paged results include `coverage` with `count`, `pages`, `complete`,
+and `reason` (`exhausted`, `max_pages`, or `search_limit`), plus `@odata.nextLink`
+when available. A request failure exits nonzero without emitting partial JSON.
+`complete` means the endpoint was exhausted, **not** that every relevant email
+was necessarily found. Search uses Microsoft's indexed KQL search, with its
+indexing delay and 1,000-result ceiling. At 1,000 results coverage is conservatively
+incomplete even without a next link; narrow the dates/query to retrieve more.
+
+`search` accepts one quoted KQL expression as its optional positional query;
+`--from` and `--to` add quoted name/address phrases, ANDed with the query and
+date bounds. These structured person values cannot contain quotes, backslashes,
+or newlines. Dates use valid `YYYY-MM-DD` values, inclusive `--since` and
+exclusive `--before`; list uses UTC midnight, while search uses Graph's received-date
+search semantics. Search order is Microsoft's received-time order, not relevance.
+No attachment text extraction or local mailbox index is created.
+
+`thread` resolves a message's `conversationId` and retrieves full message bodies
+across mailbox folders, including your replies. It sorts the retrieved messages
+by `sentDateTime` (falling back to received time), oldest first. Capped threads
+are not guaranteed to contain the earliest/latest messages; check coverage.
+Conversation grouping is Microsoft's, not a subject-line heuristic: renamed,
+forwarded, or separate conversations may need additional searches. Summary and
+read results include conversation ID, parent folder ID, and sent timestamp.
+Outlook `webLink` values remain available for citations.
 
 `attachments` returns metadata only, with `@odata.nextLink` when another page
 exists. `download` supports file attachments, not attached Outlook items or
@@ -224,6 +275,39 @@ On Windows, secure that directory with user-only ACLs; POSIX modes are not an AC
 replacement. Tokens refresh automatically; revoked/expired sessions require
 `dmail login` again. Concurrent commands share a cache but do not lock refreshes;
 avoid simultaneous refresh/login/logout operations on the same cache.
+
+#### Private usage history
+
+Commands are logged by default to `DMAIL_HOME/usage/YYYY-MM-DD.jsonl`, or
+`${XDG_CONFIG_HOME:-~/.config}/dtools/dmail/usage/` when `DMAIL_HOME` is unset.
+The directory uses mode 700 and files use mode 600 on POSIX. Files rotate daily
+in UTC; each logged command prunes files older than today plus the preceding
+89 days. Inactive installations do not run a background cleanup job. Files are
+local and unencrypted; secure Windows ACLs and full-disk encryption still apply.
+Set `DMAIL_USAGE_LOG=0` to disable new logging (existing history is retained).
+
+Each JSONL event has a schema version, timestamp, command name, option names,
+explicit numeric page-size/page-limit values, duration, success/failure, and
+available result counts, pages, coverage status/reason, or downloaded byte count.
+Other option values—including dates, people, folders, output paths, tenant/client
+IDs, and continuation URLs—are recorded only as presence booleans. Positional
+queries and message/attachment IDs are also presence booleans. Unknown commands
+are recorded as `unknown`; invalid arguments do not record any option values.
+No message bodies, subjects, addresses, filenames, query text, credentials,
+response objects, or raw errors/stack traces are written. Error categories are
+allowlisted (`invalid_arguments`, `network`, `http_NNN`, or `command_failed`).
+Failed commands have no result statistics, even if some requests succeeded.
+
+`dmail usage [--since YYYY-MM-DD] [--before YYYY-MM-DD]` returns a local JSON
+summary by command: calls, failures, total/average/maximum duration, returned
+item/page totals, incomplete-result counts and coverage reasons, error counts,
+and option-use frequencies. Dates use UTC, inclusive since/exclusive before;
+defaults cover retained history. Repeated results are counted per invocation,
+not deduplicated messages. Malformed log records are counted in `skippedLines`.
+Help and usage queries do not log themselves; usage needs no login and does not
+contact Microsoft. Logging failures issue a generic stderr warning without
+changing command results or exit status. Interrupted/killed processes may not
+produce an event. `logout` removes credentials, not usage history.
 
 ### `djobs`
 
@@ -397,6 +481,7 @@ bash -n bin/dnet bin/dask bin/dmail bin/djobs libexec/dnet/*
 node --check libexec/dask/ask.mjs
 node --check libexec/dask/app.js
 node --check libexec/dmail/mail.mjs
+node --check libexec/dmail/usage.mjs
 node --check libexec/djobs/jobs.mjs
 node --check libexec/djobs/schedules.mjs
 node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs
