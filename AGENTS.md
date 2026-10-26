@@ -24,6 +24,17 @@ Guidance for AI agents and maintainers working in this repository.
   Use `StartInterval`, not calendar/cron scheduling. Scripts run via `/bin/bash`.
   Tests must use temporary homes and fake launchctl, never real job installs.
   User exclusions add to `com.apple.`; do not forward arbitrary launchctl options.
+- `bin/dtodo` launches the dependency-free Node.js 20+ implementation in
+  `libexec/dtodo/`. Keep Things/Wrike access read-only and stdout JSON-only
+  (except help). Things uses public macOS scripting, never database writes or
+  private experimental APIs; tests must not automate the real app. Wrike uses
+  `WRIKE_TOKEN` or the private `dtodo login` credential cache, GET-only requests
+  to allowlisted hosts, and only tasks assigned to the current user, with task
+  permalinks. Login verifies a hidden-prompt token before atomic private storage;
+  logout removes the cache only. Never log tokens or task content, or commit caches.
+  Usage logs follow dmail's private daily rotation, 90-day retention, numeric/
+  command-shape allowlists, and non-fatal failures; respect `DTODO_USAGE_LOG=0`.
+  Tests use fake Wrike responses and temporary log homes, never real credentials.
 - `dnet` is currently macOS-specific. Future tools may target Linux or Windows,
   but do not make `dnet` pretend to support platforms it cannot safely manage.
 
@@ -54,14 +65,20 @@ Guidance for AI agents and maintainers working in this repository.
 Run syntax checks for shell files:
 
 ```bash
-bash -n bin/dnet bin/dask bin/dmail bin/djobs libexec/dnet/*
+bash -n bin/dnet bin/dask bin/dmail bin/djobs bin/dtodo libexec/dnet/*
 node --check libexec/dask/ask.mjs
 node --check libexec/dask/app.js
 node --check libexec/dmail/mail.mjs
 node --check libexec/dmail/usage.mjs
 node --check libexec/djobs/jobs.mjs
 node --check libexec/djobs/schedules.mjs
-node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs
+node --check libexec/dtodo/auth.mjs
+node --check libexec/dtodo/todo.mjs
+node --check libexec/dtodo/wrike.mjs
+node --check libexec/dtodo/things.mjs
+node --check libexec/dtodo/things.js
+node --check libexec/dtodo/usage.mjs
+node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs libexec/dtodo/*.test.mjs
 ```
 
 Keep tests non-mutating by default. The `dask` tests use ephemeral loopback

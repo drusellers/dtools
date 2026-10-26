@@ -5,7 +5,7 @@ machines across macOS, Linux, and Windows.
 
 The repository is intentionally packaged with a classic `bin/` + `libexec/`
 layout so tools can stay simple and can later be distributed by a Homebrew
-formula. `dnet` uses shell scripts; `dask`, `dmail`, and `djobs` use Node.js
+formula. `dnet` uses shell scripts; `dask`, `dmail`, `djobs`, and `dtodo` use Node.js
 with no npm dependencies.
 
 ## Tools
@@ -309,6 +309,135 @@ contact Microsoft. Logging failures issue a generic stderr warning without
 changing command results or exit status. Interrupted/killed processes may not
 produce an event. `logout` removes credentials, not usage history.
 
+### `dtodo`
+
+`dtodo` reads personal tasks from the local Things app and work tasks from
+Wrike. It never creates, edits, completes, or synchronizes tasks. Results are
+JSON on stdout; errors go to stderr with exit status 1 and no partial JSON.
+Requires Node.js 20+. Things access is macOS-only; Wrike works independently
+on other platforms with `--source wrike`.
+
+```bash
+dtodo login                     # Paste Wrike personal token at a hidden prompt
+dtodo login --host app-eu.wrike.com  # Regional account, if needed
+dtodo list                      # Both sources; both must succeed
+dtodo list --source things       # Personal tasks only
+dtodo list --source wrike        # Only tasks assigned to the token owner
+dtodo today
+dtodo overdue --source wrike
+dtodo list --source wrike --limit 100 --max-pages 20
+dtodo usage
+dtodo usage --since 2026-10-01 --before 2026-11-01
+DTODO_USAGE_LOG=0 dtodo list
+dtodo logout                    # Remove saved Wrike credentials, keep usage logs
+```
+
+#### Things setup
+
+Open Things and grant Automation access when macOS requests it. If access is
+blocked, check **System Settings > Privacy & Security > Automation** for the
+terminal/agent application running `dtodo`. The adapter uses public read-only
+scripting properties, not Things' database or private experimental JSON APIs.
+It does not launch a closed Things app, change the displayed list, or open links.
+Tasks in Trash, completed/canceled items, and project containers are excluded.
+Things project/area names and `things:///show?id=...` links are returned.
+
+#### Wrike setup
+
+Create an app and generate a personal access token in the
+[Wrike App Console](https://www.wrike.com/appconsole.htm?#/api), following
+[Wrike's authorization documentation](https://wrike.readme.io/docs/oauth-20-authorization#permanent-access-token).
+Use read-only scope (`wsReadOnly`) where available. The CLI only issues GET
+requests, but cannot reduce the privileges of a token you supply.
+
+Run `dtodo login` and paste your token at the hidden terminal prompt. The CLI
+verifies it with Wrike's current-user endpoint before atomically saving it to
+`${DTODO_HOME}/wrike-credentials.json`, defaulting to
+`${XDG_CONFIG_HOME:-~/.config}/dtools/dtodo/wrike-credentials.json`. The directory
+uses mode 700 and the file mode 600 on POSIX. Tokens are **unencrypted at rest**;
+use full-disk encryption and user-only Windows ACLs. Never commit/share this file
+or include it in insecure backups. Failed/cancelled login leaves existing
+credentials unchanged. Login is personal-token based, not browser OAuth; expired
+or revoked tokens require another login. There is no automatic token refresh.
+
+For regional accounts use `dtodo login --host app-eu.wrike.com` (or
+`app-us2.wrike.com`). Otherwise login uses `WRIKE_HOST`, then `www.wrike.com`.
+The host is saved with the token. Other hosts and redirects are refused so
+credentials are not forwarded to arbitrary servers.
+
+`WRIKE_TOKEN` remains available as an environment override; with it, `WRIKE_HOST`
+defaults to `www.wrike.com`. `dtodo login` uses that environment token without a
+prompt if present. Without an environment token, reads use the saved token/host;
+a conflicting `WRIKE_HOST` requires a new login. Supply environment secrets through
+a secret manager; don't paste tokens into argv, task queries, or shell history.
+
+`dtodo logout` removes the saved file without contacting Wrike or revoking the
+token. It keeps usage history and reports `environmentTokenActive: true` if an
+environment override is still set; unset `WRIKE_TOKEN` to stop using that override.
+Things-only reads, help, and usage summaries do not load Wrike credentials.
+
+For connection troubleshooting, run `DTODO_DEBUG=1 dtodo login` or
+`DTODO_DEBUG=1 dtodo list --source wrike`. Before requesting Wrike, this prints
+the resolved host and a masked token suffix (only the last five characters) to
+stderr. Tokens of five characters or fewer are fully redacted. Diagnostics are
+off by default, never enter JSON results or usage logs, and do not enable redirect
+following. Treat captured terminal output as sensitive even with the masked suffix.
+
+The client identifies the current user with `contacts?me=true`, then requests
+only their Active/Deferred assignments, including subtasks. It verifies task
+assignments locally and retains the API's `permalink` as `url`; missing or invalid
+links fail the command. Wrike tasks may belong to several folders/projects:
+`projectIds` contains the parent IDs, and `project` is null (names are not fetched).
+
+#### Results and date semantics
+
+Results contain `tasks` and `coverage` (count, Wrike page count, completeness,
+reason, and per-source coverage). Tasks include `source`, `id`, `title`,
+normalized `status`, `sourceStatus`, nullable `dueDate`/`project`, `projectIds`,
+and `url`; Things also includes nullable `area`. Task strings/links are untrusted
+content; nothing is rendered, executed, or opened. No task-content cache is created.
+
+`today` preserves Things' **actual Today list**, including planned tasks without
+a deadline. For Wrike it means **due today**, not a personal planning list or
+all overdue work. `overdue` means a due date before the machine's local calendar
+day. Undated tasks aren't overdue. Things deadlines are local calendar dates;
+Wrike deadlines retain the API's date component without converting midnight UTC
+into the preceding local day.
+
+Wrike pages automatically, with `--limit` as page size (1–1000, default 100) and
+`--max-pages` as the cap (1–100, default 10). These options do not limit Things.
+Date filtering happens after retrieval: always check `coverage.complete`, even
+when no tasks match. A cap returns `complete: false`, `reason: "max_pages"`;
+raise the cap and rerun to fetch more. There is no continuation command in v1.
+Both-source reads fail if either source fails; use an explicit `--source` to
+read one independently. Results are not a transactional snapshot across systems.
+
+#### Private usage history
+
+Like `dmail`, commands log to private daily UTC JSONL files and retain today
+plus the preceding 89 days, pruning on logged commands (no background job).
+The directory is `${DTODO_HOME}/usage/`, defaulting to
+`${XDG_CONFIG_HOME:-~/.config}/dtools/dtodo/usage/`. POSIX directory/file modes
+are 700/600; files are local and unencrypted. Use full-disk encryption and
+user-only Windows ACLs. `DTODO_USAGE_LOG=0` disables new logging, not old history.
+
+Events allowlist command/option names, explicit numeric page-size/page-limit
+values, duration, success/failure, returned task/page counts, completeness,
+coverage reason, and safe error categories. `--source` is recorded only as a
+presence boolean, not its value; login's `--host` is also presence-only.
+Login/logout events include no task-result statistics. No titles, notes, projects, identities, task IDs,
+links, tokens, response content, argv, or raw errors are logged. Failed commands
+have no result statistics. Unknown commands become `unknown` and parse failures
+record no option values. Logging failure only emits a generic warning and never
+changes command success or JSON output.
+
+`dtodo usage` reads local logs without accessing Things, Wrike, or credentials.
+It summarizes calls, failures, timing, result/page totals, incomplete-result and
+error counts, and option-use frequencies by command. Counts are per invocation,
+not deduplicated tasks. Malformed records count toward `skippedLines`. Date
+bounds use UTC, inclusive `--since` and exclusive `--before`. Help/usage commands
+do not log themselves; killed processes may not produce an event.
+
 ### `djobs`
 
 `djobs` provides a focused, read-only view of `launchctl list` and manages
@@ -414,6 +543,7 @@ dnet --help
 dask --help
 dmail --help
 djobs --help
+dtodo --help
 ```
 
 ## `dnet` commands
@@ -463,8 +593,10 @@ bin/dnet                 network command dispatcher
 bin/dask                 browser-question command launcher
 bin/djobs                filtered launchd job listing launcher
 bin/dmail                Microsoft 365 mailbox command launcher
+bin/dtodo                read-only Things/Wrike task command launcher
 libexec/djobs/*          listing, config filtering, interval schedules, and tests
 libexec/dmail/*          Graph client, device-code authentication, and tests
+libexec/dtodo/*          Things scripting, Wrike reads, usage logging, and tests
 libexec/dnet/*           network implementation scripts
 libexec/dask/*           question server, browser UI, and tests
 examples/dask/*          example question batches
@@ -477,14 +609,20 @@ examples/djobs/*         example job exclusions
 These checks do not change networking settings, use sudo, or launch a browser:
 
 ```bash
-bash -n bin/dnet bin/dask bin/dmail bin/djobs libexec/dnet/*
+bash -n bin/dnet bin/dask bin/dmail bin/djobs bin/dtodo libexec/dnet/*
 node --check libexec/dask/ask.mjs
 node --check libexec/dask/app.js
 node --check libexec/dmail/mail.mjs
 node --check libexec/dmail/usage.mjs
 node --check libexec/djobs/jobs.mjs
 node --check libexec/djobs/schedules.mjs
-node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs
+node --check libexec/dtodo/auth.mjs
+node --check libexec/dtodo/todo.mjs
+node --check libexec/dtodo/wrike.mjs
+node --check libexec/dtodo/things.mjs
+node --check libexec/dtodo/things.js
+node --check libexec/dtodo/usage.mjs
+node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs libexec/dtodo/*.test.mjs
 ```
 
 ## Releases

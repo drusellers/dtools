@@ -20,7 +20,7 @@ jobs:
         with:
           node-version: '20'
       - name: Shell syntax
-        run: bash -n bin/dnet bin/dask bin/dmail bin/djobs libexec/dnet/*
+        run: bash -n bin/dnet bin/dask bin/dmail bin/djobs bin/dtodo libexec/dnet/*
       - name: JavaScript syntax
         run: |
           node --check libexec/dask/ask.mjs
@@ -28,5 +28,11 @@ jobs:
           node --check libexec/dmail/mail.mjs
           node --check libexec/djobs/jobs.mjs
           node --check libexec/djobs/schedules.mjs
+          node --check libexec/dtodo/auth.mjs
+          node --check libexec/dtodo/todo.mjs
+          node --check libexec/dtodo/wrike.mjs
+          node --check libexec/dtodo/things.mjs
+          node --check libexec/dtodo/things.js
+          node --check libexec/dtodo/usage.mjs
       - name: CLI and browser tests
-        run: node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs
+        run: node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs libexec/dtodo/*.test.mjs
