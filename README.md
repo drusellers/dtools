@@ -628,8 +628,19 @@ node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.tes
 ## Releases
 
 Commits pushed to `main` create a GitHub release through GitHub Actions. Each
-release includes a `dtools-<tag>.tar.gz` archive and a SHA-256 checksum. A future
-Homebrew formula can point at those release artifacts.
+release includes a `dtools-<tag>.tar.gz` archive and a SHA-256 checksum. After
+uploading both assets, the release workflow dispatches `update-dtools.yml` in
+[`drusellers/homebrew-tap`](https://github.com/drusellers/homebrew-tap) with the
+exact release tag. That workflow verifies the checksum, updates and validates
+`Formula/dtools.rb`, and opens a pull request; it does not automatically merge it.
+
+Configure the `HOMEBREW_TAP_TOKEN` Actions secret in this repository with a
+fine-grained personal access token scoped to `drusellers/homebrew-tap` and
+**Actions: write** permission. The default `GITHUB_TOKEN` cannot dispatch a
+workflow in another repository. If the secret is missing or dispatch fails,
+the release workflow fails, but the already-published release remains available.
+The tap update runs separately; check its Actions run for validation/PR results.
+New commands or archive layout changes still require manual formula changes.
 
 ## License
 

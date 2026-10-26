@@ -66,3 +66,18 @@ jobs:
             --target "${GITHUB_SHA}" \
             --title "dtools ${{ steps.meta.outputs.tag }}" \
             --notes-file release-notes.md
+
+      - name: Update Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::Set HOMEBREW_TAP_TOKEN to a fine-grained PAT with Actions: write access to drusellers/homebrew-tap."
+            exit 1
+          fi
+          gh workflow run update-dtools.yml \
+            --repo drusellers/homebrew-tap \
+            --field tag="${RELEASE_TAG}"
