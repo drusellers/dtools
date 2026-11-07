@@ -78,7 +78,7 @@ node --check libexec/dtodo/wrike.mjs
 node --check libexec/dtodo/things.mjs
 node --check libexec/dtodo/things.js
 node --check libexec/dtodo/usage.mjs
-node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs libexec/dtodo/*.test.mjs
+node --test libexec/dnet/tests/*.test.mjs libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs libexec/dtodo/*.test.mjs
 ```
 
 Keep tests non-mutating by default. The `dask` tests use ephemeral loopback

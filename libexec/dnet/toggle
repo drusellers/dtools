@@ -113,6 +113,42 @@ print_status() {
   done
 }
 
+remote_login_addresses() {
+  local addresses
+  # Include LAN and VPN interfaces, but omit loopback and link-local addresses.
+  addresses="$(ifconfig 2>/dev/null | awk '
+    /^[^[:space:]]/ { iface=$1; sub(/:$/, "", iface) }
+    $1 == "inet" && $2 !~ /^127[.]/ && $2 !~ /^169[.]254[.]/ && $2 != "0.0.0.0" {
+      printf "  %-26s %s (%s)\n", "SSH address", $2, iface
+    }
+    $1 == "inet6" && $2 != "::1" && tolower($2) !~ /^(fe[89ab]|ff)/ && $2 != "::" {
+      printf "  %-26s %s (%s)\n", "SSH address", $2, iface
+    }
+  ')"
+  if [ -n "$addresses" ]; then
+    printf '%s\n' "$addresses"
+    printf '  Reachability depends on your network, VPN, and firewall.\n'
+  else
+    printf '  No non-loopback, non-link-local IP addresses found.\n'
+  fi
+}
+
+remote_login_status() {
+  local result state="unknown (could not read; try sudo dnet status)"
+  # systemsetup can require administrator privileges even for this read.
+  # Never escalate automatically or infer Off from a failed query.
+  if result="$(LC_ALL=C systemsetup -getremotelogin 2>/dev/null)"; then
+    case "$result" in
+      "Remote Login: On") state="On" ;;
+      "Remote Login: Off") state="Off" ;;
+    esac
+  fi
+  printf '  %-26s %s\n' "Remote Login (SSH)" "$state"
+  if [ "$state" = On ]; then
+    remote_login_addresses
+  fi
+}
+
 daemon_status() {
   local files loaded
   if [ -f "$PLIST" ] && [ -f "$GUARD" ]; then files="yes"
@@ -180,7 +216,7 @@ load_services
 CMD="${1:-toggle}"
 case "$CMD" in
   -h|--help) usage; exit 0 ;;
-  status)    echo "IPv6 status:"; print_status; echo; daemon_status; exit 0 ;;
+  status)    echo "IPv6 status:"; print_status; echo; daemon_status; echo; remote_login_status; exit 0 ;;
   on|off|toggle) need_root "$@" ;;
   *) echo "unknown command: $CMD" >&2; usage; exit 2 ;;
 esac

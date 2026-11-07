@@ -35,4 +35,4 @@ jobs:
           node --check libexec/dtodo/things.js
           node --check libexec/dtodo/usage.mjs
       - name: CLI and browser tests
-        run: node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs libexec/dtodo/*.test.mjs
+        run: node --test libexec/dnet/tests/*.test.mjs libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs libexec/dtodo/*.test.mjs

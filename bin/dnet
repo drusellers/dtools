@@ -22,10 +22,11 @@ dnet — macOS network helpers
 
 Usage:
   dnet netcheck [host] [--save]       read-only VPN/IPv6 diagnostics report
-  dnet status                         show IPv6 and guard daemon status
+  dnet status                         show IPv6, guard daemon, and Remote Login status
   dnet off                            disable IPv6 on managed services
   dnet on                             restore IPv6 to Automatic
   dnet toggle                         flip IPv6 state on managed services
+  dnet remote-login on|off            enable/disable SSH (requires sudo)
   dnet guard dry-run                  preview automatic guard behavior
   dnet install-guard                  install/refresh the launchd VPN IPv6 guard
   dnet uninstall-guard                remove the launchd VPN IPv6 guard
@@ -66,6 +67,9 @@ case "$cmd" in
     ;;
   on|off|toggle)
     run_libexec toggle "$cmd" "$@"
+    ;;
+  remote-login)
+    run_libexec remote-login "$@"
     ;;
   guard)
     run_libexec vpn-ipv6-guard "$@"

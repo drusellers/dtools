@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Manage macOS Remote Login independently of IPv6.
+set -euo pipefail
+
+usage() {
+  printf 'Usage: dnet remote-login on|off\n'
+  printf 'Requires sudo; your terminal may also need Full Disk Access.\n'
+  printf 'Disabling Remote Login can disconnect SSH sessions.\n'
+}
+
+if [ "$#" -eq 1 ]; then
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    on|off) ;;
+    *) usage >&2; exit 2 ;;
+  esac
+else
+  usage >&2
+  exit 2
+fi
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "dnet: this command currently supports macOS only" >&2
+  exit 1
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+  exec sudo /bin/bash "$0" "$@"
+fi
+
+if [ "$1" = off ]; then
+  echo "Warning: disabling Remote Login can disconnect SSH sessions." >&2
+fi
+
+# Do not use -f: retain macOS's confirmation when disabling SSH.
+if ! systemsetup -setremotelogin "$1"; then
+  echo "dnet: could not change Remote Login; check admin access and terminal Full Disk Access." >&2
+  exit 1
+fi
+
+# systemsetup can print an error while returning zero. Verify the setting
+# rather than claiming success based only on its exit status.
+if ! result="$(LC_ALL=C systemsetup -getremotelogin)"; then
+  echo "dnet: could not verify Remote Login after the change." >&2
+  exit 1
+fi
+case "$1:$result" in
+  "on:Remote Login: On"|"off:Remote Login: Off")
+    printf '%s\n' "$result"
+    ;;
+  *)
+    echo "dnet: Remote Login did not reach the requested state; check confirmation, admin access, and terminal Full Disk Access." >&2
+    exit 1
+    ;;
+esac

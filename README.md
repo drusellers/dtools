@@ -550,14 +550,29 @@ dtodo --help
 
 ```bash
 dnet netcheck [host] [--save]       # read-only VPN/IPv6 diagnostics
-dnet status                         # IPv6 + guard daemon status
+dnet status                         # IPv6 + guard daemon + Remote Login (SSH) status
 dnet off                            # disable IPv6 on managed services
 dnet on                             # restore IPv6 to Automatic
 dnet toggle                         # flip IPv6 state on managed services
+dnet remote-login on                # enable Remote Login (SSH), requires sudo
+dnet remote-login off               # disable Remote Login (SSH), requires sudo
 dnet guard dry-run                  # preview automatic guard behavior
 dnet install-guard                  # install/refresh LaunchDaemon
 dnet uninstall-guard                # remove LaunchDaemon
 ```
+
+`dnet status` checks Remote Login with `systemsetup -getremotelogin` without
+changing settings or prompting for sudo. If macOS denies access or the query
+fails, it reports unknown; run `sudo dnet status` to retry with admin privileges.
+When Remote Login is On, status also lists local IPv4/IPv6 addresses with their
+interface names (including VPN interfaces), excluding loopback and link-local
+addresses. Connect using your Mac account, e.g. `ssh username@192.168.1.20`.
+This checks the local setting, not SSH reachability through a firewall or VPN.
+
+`dnet remote-login on|off` requests sudo when needed and verifies the resulting
+setting. Your terminal may also need Full Disk Access in macOS Privacy & Security.
+Disabling Remote Login can disconnect SSH sessions; the command preserves macOS's
+confirmation prompt (no forced shutdown). These commands do not change IPv6.
 
 The default managed services are `Wi-Fi` and `Belkin USB-C LAN`. Override them
 for one run:
@@ -622,7 +637,7 @@ node --check libexec/dtodo/wrike.mjs
 node --check libexec/dtodo/things.mjs
 node --check libexec/dtodo/things.js
 node --check libexec/dtodo/usage.mjs
-node --test libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs libexec/dtodo/*.test.mjs
+node --test libexec/dnet/tests/*.test.mjs libexec/dask/*.test.mjs libexec/dmail/*.test.mjs libexec/djobs/*.test.mjs libexec/dtodo/*.test.mjs
 ```
 
 ## Releases
